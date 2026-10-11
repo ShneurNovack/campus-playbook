@@ -39,6 +39,15 @@ def build_centers():
         addr = d.get("address") or pub.get("address") or {}
         loc = pub.get("location") or {}
         ju, jg = c.get("jewishUndergradPopulation"), c.get("jewishGraduatePopulation")
+        # every campus the center serves, with the Jewish student count its staff entered for each
+        served = []
+        for l in links:
+            lc = campuses.get(l.get("campusID"), {})
+            j = (lc.get("jewishUndergradPopulation") or 0) + (lc.get("jewishGraduatePopulation") or 0)
+            tot = (lc.get("undergradPopulation") or 0) + (lc.get("graduatePopulation") or 0)
+            if tot and j > tot:
+                j = 0
+            served.append({"id": l.get("campusID"), "name": clean(lc.get("name") or l.get("campusName")), "jpop": int(j) or None, "primary": bool(l.get("isPrimary")), "full_time": bool(l.get("isFullTime"))})
         out.append({
             "id": hid, "enrollment": enroll.get(hid), "name": clean(d.get("name") or pub.get("name")), "slug": d.get("slug"),
             "region": (d.get("region") or {}).get("name"), "tz": d.get("timezoneID"),
@@ -51,7 +60,7 @@ def build_centers():
             "jpop_ug": ju, "jpop_grad": jg, "jpop": (ju or 0) + (jg or 0) or None,
             "public": c.get("isInstitutionControlPublic"), "residency": c.get("studentResidencyType"),
             "cal_type": c.get("schoolCalendarType"), "prestige": c.get("prestige"), "tuition": c.get("annualTuition"),
-            "levels": c.get("programLevels") or [],
+            "levels": c.get("programLevels") or [], "served": served,
         })
     df = pd.DataFrame(out).set_index("id", drop=False).sort_index()
     # a nickname is a label, so no stray quotes or commas; a Jewish population above the whole enrollment is a typo
@@ -59,6 +68,9 @@ def build_centers():
     tot = df[["pop_ug", "pop_grad"]].sum(axis=1, min_count=1)
     bad = df["jpop"].notna() & tot.notna() & (df["jpop"] > tot)
     df.loc[bad, ["jpop", "jpop_ug", "jpop_grad"]] = None
+    # Jewish students across every campus the center serves; the primary campus alone when that is all there is
+    df["jpop_served"] = [(sum(x["jpop"] or 0 for x in sv) or None) if sv else j for sv, j in zip(df["served"], df["jpop"])]
+    df["jpop_served"] = df["jpop_served"].where(df["jpop"].notna(), None).astype(float)   # no count for the main campus: not listed
     return df
 
 

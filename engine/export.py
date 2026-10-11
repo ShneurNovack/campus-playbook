@@ -107,10 +107,10 @@ def catalog(P, events, centers, ideas, theme_ids, q8):
     for c, row in centers.iterrows():
         short = row["nick"] if isinstance(row["nick"], str) and row["nick"] else (row["campus"] or row["name"])
         cs.append({"id": int(c), "name": row["name"], "short": short, "campus": row["campus"], "city": row["city"], "state": row["state"], "country": row["country"],
-                   "region": row["region"], "jpop": int(row["jpop"]) if row["jpop"] == row["jpop"] and row["jpop"] else None,
+                   "region": row["region"], "jpop": int(row["jpop_served"]) if row.get("jpop_served") == row.get("jpop_served") and row.get("jpop_served") else None,
                    "pop": int(np.nansum([row["pop_ug"], row["pop_grad"]])) if np.nansum([row["pop_ug"], row["pop_grad"]]) > 0 else None,
                    "logo": row["logo"], "img": row["building"], "slug": row["slug"], "site": row["website"], "lat": r(row["lat"], 3), "lon": r(row["lon"], 3),
-                   "cluster": int(row["cluster"]) if row.get("cluster") == row.get("cluster") and row.get("cluster") is not None else None,
+                   "cat": {k: row[k] for k in ("setting", "jewish", "reach", "volume", "emphasis", "signups", "stage") if k in row and isinstance(row[k], str)},
                    "reliable": bool(row["reliable"]), "public": row["public"] if row["public"] == row["public"] else None, "residency": row["residency"]})
     cols = {
         "key": list(P["key"]), "c": [cidx[c] for c in P["center"]], "name": list(P["name"]), "t": [tkeys.index(t) for t in P["type"]],

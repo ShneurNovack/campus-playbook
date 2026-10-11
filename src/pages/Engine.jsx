@@ -1,9 +1,9 @@
 import { Link } from 'react-router-dom';
-import { useData, fmtDate, plural } from '../lib/data';
+import { useData, fmtDate } from '../lib/data';
 import { PageHead, Section, Loading, ErrorNote, Stat, Meter, Columns, HBars } from '../components/bits';
 
 // The transparency page. Every number below is read from engine.json (written by engine/export.py), from
-// centers.json (the grouping check) or from home.json (the trending window). The method notes were checked
+// centers.json (the category check) or from home.json (the trending window). The method notes were checked
 // against the engine source; thresholds quoted in the text are the constants in those files.
 const N = (v) => Number(v).toLocaleString();
 const pct = (v) => `${Math.round(v * 100)}%`;
@@ -58,6 +58,15 @@ export default function Engine() {
   const wk = curve ? Object.keys(curve).map(Number) : [];
   const hi = wk.reduce((a, b) => (curve[b] > curve[a] ? b : a), wk[0]), lo = wk.reduce((a, b) => (curve[b] < curve[a] ? b : a), wk[0]);
   const fall = terms.median_start[`fall ${thisYear}`];
+  // the category check: what the two campus facets explain of things they were not built from
+  const word = (n, cap) => { const w = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'][n] || String(n); return cap ? w[0].toUpperCase() + w.slice(1) : w; };
+  const nCampus = cen.facets.filter((f) => f.kind === 'campus').length, nEvents = cen.facets.length - nCampus;
+  const facetName = Object.fromEntries(cen.facets.map((f) => [f.key, f.label]));
+  const low = (l) => (/^(Shabbat|Jewish)/.test(l) ? l : l[0].toLowerCase() + l.slice(1));
+  const outcome = (k) => low(cen.outcome_labels[k] || k);
+  const tested = cen.facets.filter((f) => f.kind === 'campus').flatMap((f) => Object.entries(cen.validation[f.key] || {}).map(([k, r]) => ({ f: f.key, k, ...r })));
+  const strong = tested.filter((r) => r.p < 0.05).sort((x, y) => y.eta2 - x.eta2).slice(0, 3);
+  const weak = tested.filter((r) => r.p >= 0.05).sort((x, y) => y.p - x.p)[0];
   const funnel = [
     [c.events, 'events on record', `at ${N(c.centers)} centers since ${fmtDate(c.first_event, { month: 'short', year: 'numeric' })}`],
     [c.ran, 'events that ran', `${N(c.canceled)} were canceled, ${N(c.upcoming)} are still ahead`],
@@ -135,9 +144,9 @@ export default function Engine() {
             <p>Each themed dinner is then compared with the same center's plain dinners within 45 days either side. That answers the question that matters: did the theme beat a regular Friday at that center, at that point in the semester?</p>
           </Step>
 
-          <Step n={7} title="Profile and compare centers" stats={[[N(cen.profiled), 'centers profiled', 'those with 15 or more events'], [N(cen.k), 'loose groups of centers']]}>
-            <p>Each center is described by three kinds of evidence, weighted equally: its campus (Jewish student population, school size, public or private, residential or commuter), its behavior (how much it runs, how many sign up, its mix of event types) and its programs (the average wording of everything it has run).</p>
-            <p>A center's peers are the twelve nearest centers by that description. Its gaps are ideas that at least three of those peers ran in the last three years, that did not do poorly, and that it never has run.</p>
+          <Step n={7} title="Describe and compare centers" stats={[[`${N(cen.reference.matched)} of ${N(cen.reference.us)}`, 'US campuses matched to federal data', cen.reference.source], [N(cen.profiled), 'centers with enough events to read', `of ${N(cen.total)}. The rest are placed by campus alone`]]}>
+            <p>Each center is described on {word(cen.facets.length)} separate questions, and each answer is decided by a written rule. {word(nCampus, true)} are about the campus: what kind of school it is and how many Jewish students the center serves. US campuses are placed with federal data (IPEDS and the College Scorecard): public or private, Carnegie class, enrollment, admission rate and how many first-year students live with family. The other {word(nEvents)} are read from the center's own events: its biggest draw, how full its calendar is, what the calendar leans toward, how it uses sign-ups and where it is in its life on the system. The rules are on the <Link to="/centers" className="z-link">Centers</Link> page.</p>
+            <p>A center's peers are the twelve centers that score closest to it. Half of the score is the campus match (kind of campus, Jewish population, biggest draw) and half is how alike the two calendars are. Its gaps are ideas that at least three of those peers ran in the last three years, that did not do poorly, and that it never has run. An earlier version sorted centers into groups by statistical clustering. It was dropped because the groups overlapped almost completely.</p>
           </Step>
 
           <Step n={8} title="Build the timing tables" stats={[['25', 'scored events needed for a slot'], ['6', 'centers needed for a slot']]}>
@@ -177,12 +186,14 @@ export default function Engine() {
             </div>
           </Check>
 
-          <Check title="Center groups are rough" value={cen.silhouette.toFixed(2)} unit="separation score, where 0 is full overlap and 1 is clean groups">
-            <p>Centers are sorted into {cen.k} groups, the number that separated best out of 4 through 8. Even so the separation score (a silhouette) is {cen.silhouette.toFixed(2)}. Centers spread along a range far more than they fall into kinds.</p>
-            <p className="z-muted">Read a group name as a loose description and no more. Peer lists do not use the groups: a center's twelve peers are its nearest neighbors, one by one.</p>
-            <ul className="pt-1">
-              {cen.clusters.map((g) => <li key={g.id} className="py-2 flex items-baseline justify-between gap-4 z-small" style={{ borderTop: '1px solid var(--fog-2)' }}><span className="font-semibold">{g.name}</span><span className="z-muted whitespace-nowrap">{plural(g.n, 'center')}</span></li>)}
+          <Check title="Do the categories mean anything?" value={strong.length ? pct(strong[0].eta2) : 'n/a'} unit={strong.length ? `of the differences in ${outcome(strong[0].k)} are explained by ${low(facetName[strong[0].f])}` : 'no campus facet explains anything clearly'}>
+            <p>A category is worth having only if it tells you something it was not built from. So each facet is tested against things it never saw, and the same test is run with the labels shuffled at random.</p>
+            <ul>
+              {strong.map((r) => <li key={r.f + r.k} className="py-2" style={{ borderTop: '1px solid var(--fog-2)' }}>{facetName[r.f]} explains {pct(r.eta2)} of the differences in {outcome(r.k)}. Shuffled labels explain {pct(r.chance)}.</li>)}
+              {weak && <li className="py-2 z-muted" style={{ borderTop: '1px solid var(--fog-2)' }}>A weak one: {low(facetName[weak.f])} says next to nothing about {outcome(weak.k)} ({pct(weak.eta2)}, against {pct(weak.chance)} for shuffled labels).</li>}
             </ul>
+            <p>Peers pass a check of their own: {pct(cen.peer_check.same_setting_top5)} of a center's five nearest peers are at the same kind of campus, against {pct(cen.peer_check.by_chance)} if peers were drawn at random.</p>
+            <p className="z-muted">Campus facts explain some of what a center does and far from all of it, which is why the facets about events are kept separate from the ones about the campus.</p>
           </Check>
         </div>
       </Section>

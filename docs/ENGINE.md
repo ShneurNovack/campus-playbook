@@ -42,10 +42,18 @@ sign-up, and 22,178 had none, because most centers do not take sign-ups for ever
 7. **ideas** The same program at different centers. Within each type, programs are clustered on a blend of
    embedding similarity (0.65) and character n-gram similarity of the names (0.35), average linkage, then clusters
    with the same folded name are merged. An idea needs two centers. 981 ideas.
-8. **centers** A vector per center from three blocks: campus facts, how it programs (volume, mix, timing, sign-up
-   levels), and what its events are about (the embeddings of its programs). Nearest peers come from that vector.
-   A k-means grouping is published too, but it is weak (silhouette about 0.10), so the app calls the groups rough.
-   "Gaps" are ideas several peers run that the center has nothing close to, by cluster, by meaning or by name.
+8. **centers** No clustering. Each center is described on seven facets, each with a few named answers decided
+   by a written rule (`engine/categories.py`): campus setting, Jewish students served, biggest draw, calendar
+   volume, calendar emphasis, use of sign-ups, and stage on the system. US campuses are placed with federal data
+   (IPEDS institutional characteristics and student aid files, and the College Scorecard), matched once by
+   `engine/reference/build_us_campuses.py` and committed as `engine/reference/us_campuses.json`: public or
+   private, Carnegie class, admission rate, enrollment, and the share of first-year students living with family.
+   "Biggest draw" is the average of a center's five biggest events in three years, because an ordinary dinner
+   often takes no sign-ups while a big event nearly always does. Peers ("centers like this one") are scored half
+   on match (kind of campus, Jewish population, draw) and half on how alike the calendars and programs are. A
+   center with under 15 events is matched on campus alone. "Gaps" are ideas several peers run that the center has
+   nothing close to, by cluster, by meaning or by name. For every answer of every facet the engine also lists the
+   ideas far more common there than elsewhere and the ideas that beat normal there.
 9. **timing** Weekday by hour tables, weekday, hour, month, fall against spring, week of semester, Jewish and
    secular holidays. A slot is called reliable only with 25 scored events from 6 centers. Lifts in these tables
    are divided by the group's typical score, so 1.0 means a typical event of that kind.
@@ -58,6 +66,11 @@ sign-up, and 22,178 had none, because most centers do not take sign-ups for ever
 
 - Search index: the reduced vectors return 92% of the true top-10 neighbors of the full vectors.
 - Types: 88% agreement between the neighbor method and the rules on held-out events.
+- Center categories: for each facet, the share of variance it explains in things it was not built from, against
+  shuffled labels. Jewish population explains about a third of the differences in biggest draw. Campus setting
+  explains about 15% of draw and 18% of how much of the calendar is classes or Shabbat, and little about holidays.
+  A center's five nearest peers share its campus setting 68% of the time, against 16% by chance. An earlier
+  version grouped centers with k-means; the groups overlapped almost completely (silhouette 0.10) and were dropped.
 - Prediction: scoring a held-out program from its nearest neighbors' results has a rank correlation of about 0.30
   with what happened (0.06 using type alone). The top fifth of predictions beat normal 54% of the time, the bottom
   fifth 22%. That is an edge, not a forecast, and the app says so.

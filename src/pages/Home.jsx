@@ -66,7 +66,7 @@ function Gaps({ mine, centers, ideas, cat }) {
   if (!prof || !prof.gaps.length) return null;
   const byId = new Map(ideas.map((i) => [i.id, i]));
   return (
-    <Section id="gaps-h" title={`Centers like ${centerLabel(me)} run these. You never have.`} sub={`Your twelve nearest peers by campus, sign-up numbers and what they program. An idea is listed when at least three of them ran it in the last three years.`} action={<Link to={`/center/${mine}`} className="z-btn z-btn-soft z-btn-sm">Your center's page</Link>}>
+    <Section id="gaps-h" title={`Centers like ${centerLabel(me)} run these. You never have.`} sub={`Your twelve closest matches on kind of campus, Jewish population, draw and what they program. An idea is listed when at least three of them ran it in the last three years.`} action={<Link to={`/center/${mine}`} className="z-btn z-btn-soft z-btn-sm">Your center's page</Link>}>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {prof.gaps.slice(0, 9).map((g) => { const i = byId.get(g.idea); if (!i) return null; return (
           <Link key={g.idea} to={`/idea/${g.idea}`} className="z-card flex items-center justify-between gap-4">

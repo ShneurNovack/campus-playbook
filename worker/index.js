@@ -10,7 +10,10 @@
 
 import { verifyGithubToken } from "./oidc.js";
 
-const MODEL = "@cf/baai/bge-m3";
+// Embedding models the engine may ask for. The engine tests them against each other on its own data and names
+// the winner in public/embed.json, which the public search route then follows.
+const MODELS = { "bge-m3": "@cf/baai/bge-m3", "qwen3": "@cf/qwen/qwen3-embedding-0.6b", "gemma": "@cf/google/embeddinggemma-300m", "bge-large": "@cf/baai/bge-large-en-v1.5" };
+const MODEL = MODELS["bge-m3"];
 const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8", "x-robots-tag": "noindex, nofollow", ...headers } });
 
 // Slicing can cut an emoji in half, and the model rejects malformed text. Drop lone surrogates and control characters.
@@ -36,8 +39,8 @@ async function authed(request, env) {
   return false;
 }
 
-async function embedMany(env, texts) {
-  const out = new Float32Array(texts.length * 1024);
+async function embedMany(env, texts, MODEL = MODELS["bge-m3"]) {
+  let out = null, dims = 0;
   let n = 0;
   for (let i = 0; i < texts.length; i += 32) {
     const batch = texts.slice(i, i + 32);
@@ -52,9 +55,10 @@ async function embedMany(env, texts) {
         rows.push(res.data[0]);
       }
     }
-    for (const v of rows) { out.set(v, n * 1024); n++; }
+    if (!out) { dims = rows[0].length; out = new Float32Array(texts.length * dims); }
+    for (const v of rows) { out.set(v, n * dims); n++; }
   }
-  return out;
+  return { out, dims };
 }
 
 // The projection the engine fitted: mean (1024) and components (k x 1024), float32, written to public/proj.bin.
@@ -69,7 +73,9 @@ async function projection(env) {
   const obj = await env.BUCKET.get("public/proj.bin");
   const f = new Float32Array(await obj.arrayBuffer());
   const d = f[0] | 0, k = f[1] | 0;
-  proj = { at: now, etag: head.etag, mean: f.subarray(2, 2 + d), comp: f.subarray(2 + d, 2 + d + k * d), k, d };
+  let model = MODEL;
+  try { const cfg = await env.BUCKET.get("public/embed.json"); if (cfg) { const c = await cfg.json(); if (MODELS[c.model]) model = MODELS[c.model]; } } catch (_) { /* keep the default */ }
+  proj = { at: now, etag: head.etag, mean: f.subarray(2, 2 + d), comp: f.subarray(2 + d, 2 + d + k * d), k, d, model };
   return proj;
 }
 
@@ -88,7 +94,8 @@ async function queryEmbed(request, env) {
   if (!body?.text || text === "untitled") return json({ error: "text required" }, 400);
   const p = await projection(env);
   if (!p) return json({ error: "engine has not published a projection yet" }, 503);
-  const v = (await env.AI.run(MODEL, { text: [text] })).data[0];
+  const v = (await env.AI.run(p.model || MODEL, { text: [text] })).data[0];
+  if (v.length !== p.d) return json({ error: "the published projection does not match the model" }, 503);
   const out = new Float32Array(p.k);
   let norm = 0;
   for (let j = 0; j < p.k; j++) {
@@ -101,7 +108,7 @@ async function queryEmbed(request, env) {
   const bytes = new Uint8Array(out.buffer);
   let bin = "";
   for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return json({ model: MODEL, dims: p.k, v: btoa(bin) }, 200, { "cache-control": "private, max-age=3600" });
+  return json({ model: p.model || MODEL, dims: p.k, v: btoa(bin) }, 200, { "cache-control": "private, max-age=3600" });
 }
 
 async function data(request, env, url) {
@@ -126,8 +133,10 @@ async function analyst(request, env, url) {
     const body = await request.json().catch(() => null);
     const texts = Array.isArray(body?.texts) ? body.texts.slice(0, 96).map((t) => tidy(t)) : null;
     if (!texts || !texts.length) return json({ error: "texts[] required" }, 400);
-    const vecs = await embedMany(env, texts);
-    return new Response(vecs.buffer, { headers: { "content-type": "application/octet-stream", "x-count": String(texts.length), "x-dims": "1024" } });
+    const model = MODELS[body.model || "bge-m3"];
+    if (!model) return json({ error: "unknown model", models: Object.keys(MODELS) }, 400);
+    const { out, dims } = await embedMany(env, texts, model);
+    return new Response(out.buffer, { headers: { "content-type": "application/octet-stream", "x-count": String(texts.length), "x-dims": String(dims) } });
   }
   if (url.pathname === "/analyst/put" && request.method === "PUT") {
     if (!okKey) return json({ error: "bad key" }, 400);

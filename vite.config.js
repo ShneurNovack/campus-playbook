@@ -7,6 +7,8 @@ const target = process.env.EDGE_URL || "https://campus-playbook.shneur.workers.d
 const data = process.env.DATA_URL || target;
 export default defineConfig({
   plugins: [react()],
-  server: { proxy: { "/data": { target: data, changeOrigin: true }, "/api": { target, changeOrigin: true } } },
+  server: { proxy: { "/data": { target: data, changeOrigin: true },
+    // with local data, typed searches use the projection staged under public/next/ on the Worker
+    "/api": { target, changeOrigin: true, rewrite: (p) => (process.env.DATA_URL ? p + (p.includes("?") ? "&" : "?") + "space=next" : p) } } },
   build: { outDir: "dist", chunkSizeWarningLimit: 900 },
 });

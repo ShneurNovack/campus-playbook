@@ -63,19 +63,22 @@ async function embedMany(env, texts, MODEL = MODELS["bge-m3"]) {
 
 // The projection the engine fitted: mean (1024) and components (k x 1024), float32, written to public/proj.bin.
 // Layout: [d_in, k, mean..., components row-major...]. Loaded once per isolate and refreshed when the file changes.
-let proj = { at: 0, etag: "", mean: null, comp: null, k: 0 };
-async function projection(env) {
+// A second copy can sit under public/next/ so a new engine output can be tried (?space=next) before it replaces the live one.
+const projs = {};
+async function projection(env, dir = "public/") {
   const now = Date.now();
+  let proj = projs[dir] || { at: 0, etag: "", mean: null, comp: null, k: 0 };
   if (proj.comp && now - proj.at < 300e3) return proj;
-  const head = await env.BUCKET.head("public/proj.bin");
+  const head = await env.BUCKET.head(dir + "proj.bin");
   if (!head) return null;
   if (proj.comp && head.etag === proj.etag) { proj.at = now; return proj; }
-  const obj = await env.BUCKET.get("public/proj.bin");
+  const obj = await env.BUCKET.get(dir + "proj.bin");
   const f = new Float32Array(await obj.arrayBuffer());
   const d = f[0] | 0, k = f[1] | 0;
   let model = MODEL;
-  try { const cfg = await env.BUCKET.get("public/embed.json"); if (cfg) { const c = await cfg.json(); if (MODELS[c.model]) model = MODELS[c.model]; } } catch (_) { /* keep the default */ }
+  try { const cfg = await env.BUCKET.get(dir + "embed.json"); if (cfg) { const c = await cfg.json(); if (MODELS[c.model]) model = MODELS[c.model]; } } catch (_) { /* keep the default */ }
   proj = { at: now, etag: head.etag, mean: f.subarray(2, 2 + d), comp: f.subarray(2 + d, 2 + d + k * d), k, d, model };
+  projs[dir] = proj;
   return proj;
 }
 
@@ -92,10 +95,12 @@ async function queryEmbed(request, env) {
   const body = await request.json().catch(() => null);
   const text = tidy(body?.text, 600);
   if (!body?.text || text === "untitled") return json({ error: "text required" }, 400);
-  const p = await projection(env);
+  const p = await projection(env, new URL(request.url).searchParams.get("space") === "next" ? "public/next/" : "public/");
   if (!p) return json({ error: "engine has not published a projection yet" }, 503);
   const v = (await env.AI.run(p.model || MODEL, { text: [text] })).data[0];
   if (v.length !== p.d) return json({ error: "the published projection does not match the model" }, 503);
+  // the engine works with unit vectors, so bring the query to unit length before the engine's mean is taken off
+  { let n0 = 0; for (let i = 0; i < v.length; i++) n0 += v[i] * v[i]; n0 = Math.sqrt(n0) || 1; for (let i = 0; i < v.length; i++) v[i] /= n0; }
   const out = new Float32Array(p.k);
   let norm = 0;
   for (let j = 0; j < p.k; j++) {

@@ -28,10 +28,12 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: |
-            engine/data/work/emb_keys.json
-            engine/data/work/emb_vecs.npy
-          key: embed-cache-${{ github.run_id }}
-          restore-keys: embed-cache-
+            engine/data/work/emb_name_keys.json
+            engine/data/work/emb_name_vecs.npy
+            engine/data/work/emb_blurb_keys.json
+            engine/data/work/emb_blurb_vecs.npy
+          key: embed2-cache-${{ github.run_id }}
+          restore-keys: embed2-cache-
       - name: Pull the public data
         run: python -m engine.pull
       - name: Compute and publish

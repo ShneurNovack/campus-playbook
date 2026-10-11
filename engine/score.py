@@ -27,6 +27,7 @@ def run(events, centers):
     ev = events
     ev["measured"] = ev["ran"] & (ev["regs"] >= 1) & ev["type"].isin(EVENT_TYPES + ["other"])
     base = np.full(n, np.nan); pct = np.full(n, np.nan); cbase = np.full(n, np.nan); nsame = np.zeros(n, int)
+    cpct = np.full(n, np.nan)      # where the event lands among ALL of its center's events around that time, 0 to 1
     ord_ = (ev["dt"].values.astype("datetime64[D]").astype(int))
     for c, idx in ev.groupby("center").indices.items():
         idx = np.asarray(idx)
@@ -52,9 +53,11 @@ def run(events, centers):
             w = np.concatenate([regs[lo[k]:k], regs[k + 1:hi[k]]])
             if len(w) >= MIN_ANY:
                 cbase[mi[k]] = np.median(w)
+                cpct[mi[k]] = ((w < regs[k]).sum() + 0.5 * (w == regs[k]).sum()) / len(w)
                 if np.isnan(pct[mi[k]]):
                     pct[mi[k]] = ((w < regs[k]).sum() + 0.5 * (w == regs[k]).sum()) / len(w)
     ev["base"], ev["cbase"], ev["pct"], ev["nsame"] = base, cbase, pct, nsame
+    ev["cpct"] = cpct
     b = np.where(np.isnan(base), cbase, base)
     ev["lift"] = np.where(ev["measured"] & ~np.isnan(b), (ev["regs"] + A) / (b + A), np.nan)
     ev["c_lift"] = np.where(ev["measured"] & ~np.isnan(cbase), (ev["regs"] + A) / (cbase + A), np.nan)

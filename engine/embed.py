@@ -8,6 +8,9 @@ from .common import WORK, log, sha
 
 EDGE = os.environ.get("EDGE_URL", "https://campus-playbook.shneur.workers.dev")
 DIM = 1024
+# Chosen by test (experiments in docs/ENGINE.md): bge-m3 against qwen3-embedding-0.6b and embeddinggemma-300m on
+# three jobs built from this data. It won or tied each one, so the model stayed and the text preparation changed.
+MODEL = os.environ.get("EMBED_MODEL", "bge-m3")
 _lock = threading.Lock()
 
 

@@ -19,7 +19,7 @@ from .common import r, title_case, log
 from .types import TYPES
 
 SKIP_TYPES = {"resource", "togo"}
-TAU, MERGE = 0.50, 0.80
+TAU, MERGE = 0.55, 0.85     # recalibrated for the name-and-blurb vectors: more programs land in an idea, at the same purity
 
 
 def _shrunk(logs, prior=3.0):

@@ -4,18 +4,36 @@ import numpy as np
 import pandas as pd
 from collections import Counter
 from .common import log, sha, r
-from . import embed
+from . import embed, textprep
+
+NAME_WEIGHT = 0.5      # share of the name in an event's vector when it also has a blurb (picked by test, see docs)
 
 
-def attach_text(events, cache):
-    texts = [embed.event_text(n, s, d) for n, s, d in zip(events["name"], events["short"], events["desc"])]
-    uniq = sorted(set(texts)); pos = {t: i for i, t in enumerate(uniq)}
-    T = embed.unit(cache.get(uniq))
-    events["tix"] = [pos[t] for t in texts]
-    return events, T, uniq
+def attach_text(events, centers, names, blurbs):
+    """One vector per distinct event text.
+
+    The name and the blurb are cleaned (textprep) and embedded separately. Each set is centered on its own average,
+    which removes what every Chabad event post has in common, and the two are then averaged. A post with no blurb
+    is its name alone, so it sits in the same space as everything else instead of off to one side.
+    Returns the events with `tix`, the matrix, and the space (the name average, which typed searches need).
+    """
+    own = {c: textprep.center_words(row) for c, row in centers.to_dict("index").items()}
+    en = [textprep.name_text(n, own.get(c, ())) for n, c in zip(events["name"], events["center"])]
+    eb = [textprep.blurb_text(d, s, n) for d, s, n in zip(events["desc"], events["short"], events["name"])]
+    un = sorted(set(en)); ub = sorted(set(b for b in eb if b))
+    N = embed.unit(names.get(un)); B = embed.unit(blurbs.get(ub)) if ub else np.zeros((0, N.shape[1]), np.float32)
+    mu_n, mu_b = N.mean(0), (B.mean(0) if len(B) else np.zeros(N.shape[1], np.float32))
+    Nc, Bc = embed.unit(N - mu_n), embed.unit(B - mu_b)
+    npos = {t: i for i, t in enumerate(un)}; bpos = {t: i for i, t in enumerate(ub)}
+    pairs = sorted(set(zip(en, eb))); ppos = {p: i for i, p in enumerate(pairs)}
+    T = np.stack([Nc[npos[a]] if not b else NAME_WEIGHT * Nc[npos[a]] + (1 - NAME_WEIGHT) * Bc[bpos[b]] for a, b in pairs])
+    events["tix"] = [ppos[p] for p in zip(en, eb)]
+    events["ename"] = en
+    log("texts: distinct names", len(un), "| distinct blurbs", len(ub), "| distinct posts", len(pairs))
+    return events, embed.unit(T), pairs, {"mu_name": mu_n.astype(np.float32), "names": len(un), "blurbs": len(ub), "model": names.model}
 
 
-def knn_types(events, T, k=15, min_sim=0.60):
+def knn_types(events, T, k=15, min_sim=0.50):
     """Type the events the rules could not place, from the labelled texts nearest to them. Also returns how well
     the same vote reproduces the rules on a held-out sample of rule-typed texts."""
     by_text = events.groupby("tix")["type"].agg(lambda x: Counter(x).most_common(1)[0][0])
@@ -86,6 +104,8 @@ def build(events, T):
             "years": sorted({d.year for d in ran["date"]}), "recurring": float(g["recurring"].mean()) >= 0.5,
             "med_regs": float(meas["regs"].median()) if len(meas) else None, "max_regs": int(meas["regs"].max()) if len(meas) else 0,
             "adj": float(np.exp(np.mean(np.clip(np.log(sc["adj"]), -1.5, 1.5)))) if len(sc) else None,
+            # where its runs landed among all of this center's events (0 bottom, 1 top). What the neighbor system predicts.
+            "pc": float(ran["cpct"].mean()) if ran["cpct"].notna().any() else None, "n_pc": int(ran["cpct"].notna().sum()),
             "pct": float(sc["pct"].mean()) if len(sc) and sc["pct"].notna().any() else None,
             "wd": int(Counter(g["wd"]).most_common(1)[0][0]), "hour": int(Counter(g["hour"]).most_common(1)[0][0]),
             "setting": int(last["setting"]), "dropped": bool(last["setting_state"] == "Canceled"),

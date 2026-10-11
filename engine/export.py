@@ -22,12 +22,17 @@ def img_short(s):
     return s if not isinstance(s, str) else s
 
 
-def project(V):
-    """PCA to K dimensions for the in-browser search. Returns the int8 matrix, the projection file, and recall."""
-    mean = V.mean(0)
-    Vc = V - mean
-    pca = PCA(n_components=K, random_state=7).fit(Vc)
-    X = Vc @ pca.components_.T
+def project(V, mu_name):
+    """Reduce to K dimensions for the in-browser search. Returns the int8 matrix, the projection file, and recall.
+
+    The program vectors are already centered, so the reduction keeps the origin where it is (no second mean). A
+    typed search is then placed in the same space by the Worker with one subtraction, the average event name,
+    and one matrix product."""
+    Vc = V
+    w, U = np.linalg.eigh((V.T @ V).astype(np.float64))
+    comp = U[:, np.argsort(-w)[:K]].T.astype(np.float32)
+    kept = float(np.sort(w)[::-1][:K].sum() / w.sum())
+    X = V @ comp.T
     Xn = embed.unit(X)
     q8 = np.clip(np.round(Xn / np.abs(Xn).max(1, keepdims=True) * 127), -127, 127).astype(np.int8)
     # recall of the small int8 search against exact cosine on the full vectors
@@ -37,8 +42,8 @@ def project(V):
     Q = q8.astype(np.float32); Qn = Q / np.linalg.norm(Q, axis=1, keepdims=True)
     approx = np.argsort(-(Xn[qs] @ Qn.T), axis=1)[:, 1:11]
     recall = float(np.mean([len(set(a) & set(b)) / 10 for a, b in zip(exact, approx)]))
-    proj = np.concatenate([[1024, K], mean.astype(np.float32), pca.components_.astype(np.float32).ravel()]).astype(np.float32)
-    return q8, proj, Xn, {"dims": K, "recall_at_10": r(recall, 3), "variance_kept": r(float(pca.explained_variance_ratio_.sum()), 3)}
+    proj = np.concatenate([[V.shape[1], K], mu_name.astype(np.float32), comp.ravel()]).astype(np.float32)
+    return q8, proj, Xn, {"dims": K, "recall_at_10": r(recall, 3), "variance_kept": r(kept, 3)}
 
 
 def thresholds(P, Xn):
@@ -57,37 +62,6 @@ def thresholds(P, Xn):
     rand = np.einsum("ij,ij->i", Xn[a], Xn[b])
     return {"same_p10": r(np.percentile(same, 10), 3), "same_p50": r(np.percentile(same, 50), 3), "random_p50": r(np.percentile(rand, 50), 3),
             "random_p95": r(np.percentile(rand, 95), 3), "random_p99": r(np.percentile(rand, 99), 3)}
-
-
-def predictor_check(P, Xn, cen_sim=None):
-    """Can the programs nearest to an idea tell how it will do? Checked on programs the model has not seen:
-    each of the newest fifth of scored programs is predicted from older programs at other centers."""
-    S = P[(P["n_scored"] >= 1) & P["adj"].notna() & P["type"].isin(EVENT_TYPES)].sort_values("first")
-    if len(S) < 500:
-        return None
-    cut = int(len(S) * 0.8)
-    tr, te = S.iloc[:cut], S.iloc[cut:]
-    y_tr = np.clip(np.log(tr["adj"].values), -1.5, 1.5); y_te = np.clip(np.log(te["adj"].values), -1.5, 1.5)
-    sims = Xn[te["pid"].values] @ Xn[tr["pid"].values].T
-    same_center = te["center"].values[:, None] == tr["center"].values[None, :]
-    sims = np.where(same_center, -1, sims)
-    out = {}
-    for k, pw in [(20, 4), (40, 8), (80, 8)]:
-        idx = np.argpartition(-sims, k, axis=1)[:, :k]
-        w = np.maximum(np.take_along_axis(sims, idx, 1), 0) ** pw
-        pred = (w * y_tr[idx]).sum(1) / np.maximum(w.sum(1), 1e-9)
-        out[f"k{k}_p{pw}"] = r(spearmanr(pred, y_te).correlation, 3)
-    tmean = tr.groupby("type")["adj"].agg(lambda x: float(np.mean(np.clip(np.log(x), -1.5, 1.5)))).to_dict()
-    base = np.array([tmean.get(t, 0.0) for t in te["type"]])
-    out["type_only"] = r(spearmanr(base, y_te).correlation, 3)
-    idx = np.argpartition(-sims, 40, axis=1)[:, :40]
-    w = np.maximum(np.take_along_axis(sims, idx, 1), 0) ** 8
-    pred = (w * y_tr[idx]).sum(1) / np.maximum(w.sum(1), 1e-9)
-    order = np.argsort(pred); fifth = len(order) // 5
-    hit = (y_te >= np.log(1.2))
-    out["top_fifth_hit"] = r(float(hit[order[-fifth:]].mean()), 3); out["bottom_fifth_hit"] = r(float(hit[order[:fifth]].mean()), 3); out["base_hit"] = r(float(hit.mean()), 3)
-    out["tested"] = int(len(te)); out["trained"] = int(len(tr))
-    return out
 
 
 def _bare(name, desc, short):
@@ -110,14 +84,18 @@ def catalog(P, events, centers, ideas, theme_ids, q8):
                    "region": row["region"], "jpop": int(row["jpop_served"]) if row.get("jpop_served") == row.get("jpop_served") and row.get("jpop_served") else None,
                    "pop": int(np.nansum([row["pop_ug"], row["pop_grad"]])) if np.nansum([row["pop_ug"], row["pop_grad"]]) > 0 else None,
                    "logo": row["logo"], "img": row["building"], "slug": row["slug"], "site": row["website"], "lat": r(row["lat"], 3), "lon": r(row["lon"], 3),
-                   "cat": {k: row[k] for k in ("setting", "jewish", "reach", "volume", "emphasis", "signups", "stage") if k in row and isinstance(row[k], str)},
+                   "cat": {k: row[k] for k in ("size", "typical", "pace", "jewish", "share", "strength", "signups", "stage") if k in row and isinstance(row[k], str)},
+                   "usual": r(row["usual"], 1) if row.get("usual") == row.get("usual") else None,
                    "reliable": bool(row["reliable"]), "public": row["public"] if row["public"] == row["public"] else None, "residency": row["residency"]})
     cols = {
         "key": list(P["key"]), "c": [cidx[c] for c in P["center"]], "name": list(P["name"]), "t": [tkeys.index(t) for t in P["type"]],
         "hol": [h if isinstance(h, str) else None for h in P["hol"]], "aud": [a or None for a in P["aud"]],
         "n": [int(x) for x in P["n"]], "up": [int(x) for x in P["n_up"]], "first": [day(d) for d in P["first"]], "last": [day(d) for d in P["last"]],
         "reg": [r(x, 1) for x in P["med_regs"]], "mx": [int(x) for x in P["max_regs"]], "adj": [int(round(x * 100)) if x == x and x is not None else None for x in P["adj"]],
-        "ns": [int(x) for x in P["n_scored"]], "img": [x if isinstance(x, str) else None for x in P["img"]], "idea": [int(x) for x in P["idea"]],
+        "ns": [int(x) for x in P["n_scored"]],
+        # where its runs landed among all of its center's events (percentile, 0 to 100) and the runs behind that:
+        # the neighbor system's raw material
+        "pc": [int(round(x * 100)) if x == x and x is not None else None for x in P["pc"]], "nl": [int(x) for x in P["n_pc"]], "img": [x if isinstance(x, str) else None for x in P["img"]], "idea": [int(x) for x in P["idea"]],
         "th": [[theme_ids.get(k, k) for k in ks] or None for ks in P["themes"]], "wd": [int(x) for x in P["wd"]], "hr": [int(x) for x in P["hour"]],
         "fl": [(1 if a else 0) + (2 if b else 0) + (4 if c_ else 0) + (8 if _bare(nm, d_, s_) else 0)
                for a, b, c_, nm, d_, s_ in zip(P["collab"], P["offsite"], P["recurring"], P["name"], P["desc"], P["short"])],
@@ -129,7 +107,7 @@ def catalog(P, events, centers, ideas, theme_ids, q8):
 
 def write_all(state):
     P, V, events, centers = state["P"], state["V"], state["events"], state["centers"]
-    q8, proj, Xn, search_info = project(V)
+    q8, proj, Xn, search_info = project(V, state["space"]["mu_name"])
     q8.tofile(f"{OUT}/vectors.bin"); proj.tofile(f"{OUT}/proj.bin")
     theme_ids = {t["key"]: t["id"] for t in state["theme_blob"]["themes"]}
     core, text = catalog(P, events, centers, state["ideas"], theme_ids, q8)
@@ -139,7 +117,8 @@ def write_all(state):
     for name in ("themes", "ideas", "timing", "home", "coming", "niches", "centers"):
         sizes[f"{name}.json"] = dump(state["centers_blob"] if name == "centers" else state[name], f"{OUT}/{name}.json")
     thr = thresholds(P, Xn)
-    pred = predictor_check(P, Xn)
+    pred = state.get("check")
+    dump({"model": state["space"]["model"], "names": state["space"]["names"], "blurbs": state["space"]["blurbs"]}, f"{OUT}/embed.json")
     ev = events
     engine = {
         "generated": dt.datetime.utcnow().isoformat(timespec="seconds") + "Z", "pulled_at": state["pulled_at"].isoformat() + "Z", "today": state["today"].isoformat(),
@@ -151,7 +130,8 @@ def write_all(state):
         "types": {"labels": TYPES, "events": {t: int(n) for t, n in Counter(ev.loc[~ev["canceled"], "type"]).most_common()},
                   "by_rules": int((ev["type_src"] == "rules").sum()), "by_neighbors": int((ev["type_src"] == "nearest").sum()), "unplaced": int((ev["type_src"] == "none").sum()), **state["type_info"]},
         "terms": state["term_info"], "score": state["score_info"], "search": {**search_info, **thr}, "predictor": pred, "sizes": sizes,
-        "model": "@cf/baai/bge-m3", "llm_calls": 0,
+        "embedding_tests": json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "embedding_tests.json"))),
+        "model": state["space"]["model"], "texts_embedded": {"names": state["space"]["names"], "blurbs": state["space"]["blurbs"]}, "llm_calls": 0,
     }
     dump(engine, f"{OUT}/engine.json")
     log("export:", {k: f"{v // 1024} KB" for k, v in sizes.items()}, "| vectors", q8.shape, "| search", search_info, "| thresholds", thr)
@@ -159,7 +139,7 @@ def write_all(state):
     return engine
 
 
-def push(names=None):
+def push(names=None, prefix="public/"):
     """Upload the output folder to the Worker's bucket."""
     edge = os.environ.get("EDGE_URL", "https://campus-playbook.shneur.workers.dev")
     for name in sorted(os.listdir(OUT)):
@@ -171,7 +151,7 @@ def push(names=None):
         data = open(path, "rb").read()
         for attempt in range(4):
             try:
-                req = urllib.request.Request(f"{edge}/analyst/put?key=public/{name}", data=data, method="PUT", headers={**hdr, "content-type": ct})
+                req = urllib.request.Request(f"{edge}/analyst/put?key={prefix}{name}", data=data, method="PUT", headers={**hdr, "content-type": ct})
                 with urllib.request.urlopen(req, timeout=180) as resp:
                     json.load(resp)
                 break

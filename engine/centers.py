@@ -146,7 +146,7 @@ def build(centers, events, P, V, ideas, today):
 
     # ---- what should do well at each center
     rows, y, n, ctr = nb.program_targets(P)
-    cand = [i for i in ideas if not i.get("staple") and i["type"] in EVENT_TYPES and i["centers"] >= 3]
+    cand = [i for i in ideas if not i.get("staple") and i["type"] in EVENT_TYPES and i["centers"] >= 4]
     Qi = embed.unit(np.stack([V[i["programs"]].mean(0) for i in cand]))
     Wt = np.clip(Qi @ V[rows].T, 0, None) ** nb.POWER * np.sqrt(n / (n + 1.0))[None, :]
     ci = np.array([pos[c] for c in ctr])
@@ -158,7 +158,10 @@ def build(centers, events, P, V, ideas, today):
     for c, g_ in P.groupby("center"):
         ran[c] = (V[g_["pid"].values] @ Qi.T).max(0) >= close
         kinds_run[c] = {(t, h) for t, h in zip(g_["type"], g_["hol"]) if isinstance(h, str)}
-    twin = (Qi @ Qi.T) >= 0.80                 # two ideas this close are one pick, not two
+    twin = (Qi @ Qi.T) >= 0.68                 # two ideas this close are one pick, not two
+    from .ideas import _canon
+    icanon = [set(_canon(i["label"].lower()).split()) for i in cand]
+    names_run = {c_: [set(_canon(n_).split()) for n_ in g_["nname"]] for c_, g_ in P.groupby("center")}
     idea_centers = [set(P.loc[i["programs"], "center"]) for i in cand]
     idea_pc = [{c_: (pc, k_, mr) for c_, pc, k_, mr in zip(P.loc[i["programs"], "center"], P.loc[i["programs"], "pc"], P.loc[i["programs"], "n_pc"], P.loc[i["programs"], "med_regs"])} for i in cand]
 
@@ -183,19 +186,23 @@ def build(centers, events, P, V, ideas, today):
         nn = [x["id"] for x in near[c]]
         new, again = [], []
         for j, i in enumerate(cand):
-            did = (c in idea_centers[j]) or bool(ran[c][j] if c in ran else False) or (isinstance(i.get("hol"), str) and (i["type"], i["hol"]) in kinds_run.get(c, ()))
+            member = c in idea_centers[j]
+            # close to something it already runs: by meaning, by name, or the same kind of event for the same holiday
+            did = member or bool(ran[c][j] if c in ran else False) or (bool(icanon[j]) and any(icanon[j] <= w_ for w_ in names_run.get(c, ()))) \
+                or (isinstance(i.get("hol"), str) and (i["type"], i["hol"]) in kinds_run.get(c, ()))
             at = [idea_pc[j][d] for d in nn if d in idea_pc[j]]
             scored = [v for v, k_, _ in at if v == v and k_]
             exp = nb.sign_ups(spread, pred[j])
-            item = {"_j": j, "idea": i["id"], "pct": r(float(pred[j]), 2), "expect": r(exp, 0) if exp is not None else None,
-                    "lo": r(nb.sign_ups(spread, info["lo"][j]), 0) if spread else None, "hi": r(nb.sign_ups(spread, info["hi"][j]), 0) if spread else None,
+            lo_, hi_ = (nb.sign_ups(spread, info["lo"][j]), nb.sign_ups(spread, info["hi"][j])) if spread else (None, None)
+            item = {"_j": j, "idea": i["id"], "pct": r(float(pred[j]), 2), "expect": r(min(max(exp, lo_), hi_), 0) if exp is not None else None,
+                    "lo": r(lo_, 0) if spread else None, "hi": r(hi_, 0) if spread else None,
                     "near": len(at), "near_pct": r(float(np.mean(scored)), 2) if scored else None, "eff": r(float(info["eff"][j]), 0)}
-            if did:
+            if member:
                 mine = idea_pc[j].get(c)
                 if mine and mine[0] == mine[0] and mine[1]:
                     item["mine"] = {"pct": r(float(mine[0]), 2), "regs": r(float(mine[2]), 0) if mine[2] == mine[2] and mine[2] is not None else None, "runs": int(mine[1])}
                 again.append(item)
-            elif len(at) >= 2 or i.get("centers_scored", 0) >= 6:
+            elif not did and len(at) >= 2:          # new here, and at least two of its nearest centers have run it
                 new.append(item)
         picks[c] = {"new": thin(sorted([x for x in new if x["pct"] >= 0.6], key=lambda x: -x["pct"]), 20), "again": thin(sorted(again, key=lambda x: -x["pct"]), 12)}
 

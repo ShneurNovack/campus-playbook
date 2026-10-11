@@ -1,17 +1,20 @@
 // The Idea lab. Type an event idea; the browser compares it with every program in the network (search.js) and
-// this page reads the neighbors: how many, at how many centers, how they did, when, and how they were packaged.
-// Nothing here replaces the engine's own analysis. The lab only summarizes the programs nearest to a typed idea.
+// runs the engine's neighbor system on the result: where would this land among a center's own events, judged from
+// similar events at similar centers. The rest of the page reads the same neighbors: when they ran, how they were
+// packaged, what they were called. Nothing here replaces the engine's own analysis.
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { ArrowRight, Search, X } from 'lucide-react';
-import { useData, useMyCenter, load, plural, centerLabel, liftShort, liftWords, fmtDate, hourLabel, DAYS, MONTHS, CONF } from '../lib/data';
+import { useData, useMyCenter, load, plural, centerLabel, liftWords, fmtDate, hourLabel, DAYS, MONTHS, CONF } from '../lib/data';
 import { PageHead, Section, Loading, ErrorNote, Empty, Flyer, Lift, StatusPill, Seg, ProgramCard, FlyerGrid, Columns, CenterLink, More } from '../components/bits';
-import { searchIndex, embed, scoreAll, wordMatch } from '../lib/search';
+import { searchIndex, embed, scoreAll, wordingMatch, blend, strength, predict, signUps, signUpRange, place, placeOf, expectWords, CLOSE, RELATED, MATCH } from '../lib/search';
+import { PickCenter } from './Home';
 
-// What a similarity means here (engine.json, "search"): two programs inside the same idea sit at 0.56 (median),
-// nine in ten above 0.38, and 99% of random pairs sit below 0.39.
-const CLOSE = 0.55, RELATED = 0.42, LEX = 0.12, POW = 8, PRIOR = 3;
-const MIN_SCORED = 8, MIN_CENTERS = 5;
+// What a cosine means for a typed idea against a program (search.js): an exact name scores 0.9 and up, a close
+// match 0.60 or more, a related program 0.45 or more, and nonsense tops out near 0.33.
+// An estimate needs evidence: at least MIN_CLOSE close matches or MIN_RELATED related programs, and MIN_VOTERS of
+// them with sign-ups that place them among their own center's events.
+const MIN_CLOSE = 3, MIN_RELATED = 6, MIN_VOTERS = 3;
 const MONTH_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const EXAMPLES = ['sushi in the sukkah', 'pickleball tournament', 'challah bake for sororities', 'mental health panel', 'welcome back bbq'];
 const RECENT_DAYS = 60;
@@ -20,49 +23,31 @@ const clampLog = (pct) => Math.max(-1.5, Math.min(1.5, Math.log(pct / 100)));
 const gm = (logs, prior = 4) => (logs.length ? Math.exp(logs.reduce((s, x) => s + x, 0) / (logs.length + prior)) : null);
 const norm = (s) => (s || '').toLowerCase().replace(/[^\p{L}\p{N}\s&+]/gu, ' ').replace(/\s+/g, ' ').trim();
 const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+const cap = (s) => s.replace(/^the /, '').replace(/^./, (c) => c.toUpperCase());
+const mean = (xs) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null);
 // "Around Sukkot" reads as "around Sukkot" mid-sentence; month ranges keep their capitals.
 const whenText = (w) => (/^(Around|Any|First|Last|During)\b/.test(w || '') ? w[0].toLowerCase() + w.slice(1) : w || '');
 
 // ---------------------------------------------------------------- the search
-// About 950 programs were posted with a name and nothing else. Their vectors are bare titles, and a typed idea
-// is a bare title too, so it looks a little like every one of them whatever the subject ("Board meeting" and
-// "Girls night" came up for almost any short query). `titleStyle` finds that shared direction (the mean of the
-// name-only programs) and how much of it each program carries; the search then leaves it out of the comparison:
-// cosine minus (program's share x query's share). Programs with a description are barely touched.
-let styleMemo = null;
-function titleStyle(ix, text) {
-  if (styleMemo && styleMemo.ix === ix) return styleMemo;
-  const { M, n, dims, norm: len } = ix, P = ix.cat.programs, c = new Float64Array(dims), share = new Float32Array(n);
-  const bare = (i) => { const nm = P.name[i].trim().toLowerCase(), d = (text.desc[i] || '').trim().toLowerCase(), s = (text.short[i] || '').trim().toLowerCase(); return (d.length < 25 || d === nm) && (s.length < 25 || s === nm); };
-  for (let i = 0; i < n; i++) if (bare(i)) { const o = i * dims; for (let j = 0; j < dims; j++) c[j] += M[o + j] / len[i]; }
-  let cl = 0; for (let j = 0; j < dims; j++) cl += c[j] * c[j];
-  cl = Math.sqrt(cl) || 1; for (let j = 0; j < dims; j++) c[j] /= cl;
-  for (let i = 0; i < n; i++) { let s = 0; const o = i * dims; for (let j = 0; j < dims; j++) s += M[o + j] * c[j]; share[i] = s / len[i]; }
-  styleMemo = { ix, c, share };
-  return styleMemo;
-}
-
 let indexLoaded = false;
 async function runSearch(q) {
   const vecP = embed(q).then((v) => ({ v }), (embedError) => ({ embedError }));
-  const [ix, text, timing, themes, engine, ideas] = await Promise.all([searchIndex(), load('text.json'), load('timing.json'), load('themes.json'), load('engine.json'), load('ideas.json')]);
+  const [ix, text, timing, themes, engine, ideas, centers] = await Promise.all([searchIndex(), load('text.json'), load('timing.json'), load('themes.json'), load('engine.json'), load('ideas.json'), load('centers.json')]);
   indexLoaded = true;
   const { v, embedError } = await vecP;
-  const words = wordMatch(ix, q), sims = v ? scoreAll(ix, v) : null;
-  const P = ix.cat.programs, strength = new Float32Array(ix.n), order = [];
-  let qShare = 0, style = null;
-  if (v) { style = titleStyle(ix, text); for (let j = 0; j < ix.dims; j++) qShare += v[j] * style.c[j]; }
+  const words = wordingMatch(ix, q), sims = v ? scoreAll(ix, v) : null;
+  const P = ix.cat.programs, cos = new Float32Array(ix.n), score = new Float32Array(ix.n), order = [];
   for (let i = 0; i < ix.n; i++) {
-    // With the embedding: cosine (bare-title likeness left out), plus a small bonus when the idea's own rare
-    // words are in the name. Without it (the service failed): names only, "every word in the name" is close.
-    // A name that carries at least half of the idea's distinctive words is never less than related.
-    let s = JUNK.test(P.name[i]) ? 0 : sims ? sims[i] - style.share[i] * qShare + LEX * words[i] : words[i] > 0 ? 0.3 + 0.3 * words[i] : 0;
-    if (s > 0 && s < RELATED && words[i] >= 0.5) s = RELATED + 1e-4; // a hair above, because strength is stored as float32
-    strength[i] = s;
-    if (s >= 0.3) order.push(i);
+    if (JUNK.test(P.name[i])) continue;
+    // cos is what the tiers and the estimate read: the plain cosine. score orders the lists: the cosine blended
+    // with the wording match. Without the embedding (the service failed) both come from the wording alone, where
+    // the same name is a close match and half of the wording is related.
+    cos[i] = sims ? strength(sims[i], words[i]) : words[i] > 0 ? 0.25 + 0.4 * words[i] : 0;
+    score[i] = sims ? blend(sims[i], words[i]) : cos[i];
+    if (score[i] >= 0.2) order.push(i);
   }
-  order.sort((a, b) => strength[b] - strength[a] || P.ns[b] - P.ns[a] || P.n[b] - P.n[a]);
-  return { q, ix, cat: ix.cat, strength, order, text, timing, themes, engine, ideas, embedError: embedError || null };
+  order.sort((a, b) => score[b] - score[a] || P.nl[b] - P.nl[a] || P.n[b] - P.n[a]);
+  return { q, ix, cat: ix.cat, cos, score, order, semantic: !!sims, text, timing, themes, engine, ideas, centers, embedError: embedError || null };
 }
 
 function useLab(q) {
@@ -78,24 +63,26 @@ function useLab(q) {
 }
 
 // Everything the result dashboard shows, from the ranked neighbors.
-function analyze(res, month) {
-  const { cat, strength, order, text, timing, themes, ideas } = res, P = cat.programs;
-  const related = order.filter((i) => strength[i] >= RELATED), close = related.filter((i) => strength[i] >= CLOSE);
+function analyze(res, month, mine) {
+  const { cat, cos, score, order, text, timing, themes, ideas, centers } = res, P = cat.programs;
+  // matches: related by meaning, or carried by the wording. related and close are read from the cosine alone.
+  const matches = order.filter((i) => cos[i] >= RELATED || score[i] >= MATCH);
+  const related = matches.filter((i) => cos[i] >= RELATED), close = related.filter((i) => cos[i] >= CLOSE);
   const closeCenters = new Set(close.map((i) => P.c[i]));
 
-  // expected lift: every scored neighbor votes with weight strength^8, in log space, shrunk toward 1
-  let sw = 0, sw2 = 0, swl = 0; const scoredCenters = new Set(); let scored = 0;
-  for (const i of related) {
-    if (P.adj[i] == null) continue;
-    const w = Math.pow(Math.min(1, strength[i]), POW);
-    sw += w; sw2 += w * w; swl += w * clampLog(P.adj[i]); scored++; scoredCenters.add(P.c[i]);
-  }
-  const neff = sw ? (sw * sw) / sw2 : 0;
-  const est = scored ? Math.exp((swl / sw) * (neff / (neff + PRIOR))) : null;
-  const closeScored = close.filter((i) => P.adj[i] != null);
-  const hits = closeScored.filter((i) => P.adj[i] >= 120).length;
-  const enough = scored >= MIN_SCORED && scoredCenters.size >= 4;
-  const kind = !close.length ? 'new' : closeCenters.size < MIN_CENTERS ? 'rare' : !enough ? 'unscored' : est >= 1.1 ? 'beats' : est <= 0.91 ? 'under' : 'normal';
+  // the neighbor system (engine/neighbors.py, run in search.js on the plain cosines)
+  const me = mine != null ? cat.centerById.get(mine) : null, prof = me ? centers.profiles[me.id] : null, st = me ? centers.stats[me.id] : null;
+  const gated = close.length < MIN_CLOSE && related.length < MIN_RELATED;
+  const est = res.semantic && !gated ? predict(res.ix, centers, cos, me ? me.id : null) : null;
+  const kind = gated ? 'new' : !res.semantic ? 'words' : !est || est.pct == null || est.n < MIN_VOTERS ? 'unmeasured' : 'est';
+  // the evidence around it: close matches at this center's nearest centers, and at the center itself
+  const nearIdx = new Map((prof?.near || []).map((x, k) => [cat.centerById.get(x.id)?.idx, k]));
+  const nearClose = close.filter((i) => nearIdx.has(P.c[i])).sort((a, b) => nearIdx.get(P.c[a]) - nearIdx.get(P.c[b]) || score[b] - score[a]);
+  const byNear = new Map();
+  for (const i of nearClose) { const g = byNear.get(P.c[i]); if (g) g.push(i); else byNear.set(P.c[i], [i]); }
+  const nearMeans = [...byNear.values()].map((g) => mean(g.filter((i) => P.pc[i] != null).map((i) => P.pc[i] / 100))).filter((x) => x != null);
+  const own = me ? matches.filter((i) => P.c[i] === me.idx) : [], ownClose = own.filter((i) => cos[i] >= CLOSE);
+  const fit = { me, prof, spread: st?.spread || null, typical: st?.typical ?? null, nearCount: nearIdx.size, nearClose, nearRan: byNear.size, nearMeasured: nearMeans.length, nearPct: mean(nearMeans), own, ownClose };
 
   // timing, from every dated occurrence of the close matches
   const months = new Array(12).fill(0), mLogs = months.map(() => []), mCenters = months.map(() => new Set()), allLogs = [];
@@ -125,10 +112,10 @@ function analyze(res, month) {
   // nearest ideas and Shabbat themes: best match plus half of the second best
   const bag = new Map();
   const add = (key, s) => { const b = bag.get(key) || [0, 0, 0]; if (s > b[0]) { b[1] = b[0]; b[0] = s; } else if (s > b[1]) b[1] = s; b[2]++; bag.set(key, b); };
-  for (const i of related) {
+  for (const i of matches) {
     const th = P.th[i];
-    if (th && th.length) add(`t:${th[0]}`, strength[i]);
-    else if (P.idea[i] >= 0) add(`i:${P.idea[i]}`, strength[i]);
+    if (th && th.length) add(`t:${th[0]}`, score[i]);
+    else if (P.idea[i] >= 0) add(`i:${P.idea[i]}`, score[i]);
   }
   const themeById = new Map(themes.themes.map((t) => [t.id, t]));
   const nearestAll = [...bag.entries()].map(([key, [a, b, n]]) => ({ key, score: a + 0.5 * b, best: a, n })).sort((x, y) => y.score - x.score)
@@ -137,11 +124,11 @@ function analyze(res, month) {
   // The engine sometimes splits one idea into several with the same name. Show the widest, and say so.
   const byLabel = new Map();
   for (const x of nearestAll) { const k = (x.theme ? 't:' : 'i:') + norm((x.theme || x.idea).label); const g = byLabel.get(k); if (g) g.push(x); else byLabel.set(k, [x]); }
-  const nearest = [...byLabel.values()].map((g) => ({ ...g.reduce((b, x) => ((x.theme || x.idea).centers > (b.theme || b.idea).centers ? x : b), g[0]), score: g[0].score, twins: g.length - 1 })).slice(0, 5);
+  const nearest = [...byLabel.values()].map((g) => ({ ...g.reduce((b, x) => ((x.theme || x.idea).centers > (b.theme || b.idea).centers ? x : b), g[0]), score: g[0].score, twins: g.length - 1 })).slice(0, gated ? 3 : 5);
 
   // flyers: best matches that have one, at most two per center
   const perCenter = new Map(), flyers = [];
-  for (const i of related) {
+  for (const i of matches) {
     if (!P.img[i]) continue;
     const k = perCenter.get(P.c[i]) || 0; if (k >= 2) continue;
     perCenter.set(P.c[i], k + 1); flyers.push(i);
@@ -150,7 +137,7 @@ function analyze(res, month) {
 
   // wording: one real description per center, from the best matches
   const seenC = new Set(), seenT = new Set(), wording = [];
-  for (const i of related.slice(0, 80)) {
+  for (const i of matches.slice(0, 80)) {
     if (seenC.has(P.c[i])) continue;
     const d = (text.desc[i] || '').trim(), s = (text.short[i] || '').trim();
     const t = d.length >= 60 && d.length <= 480 ? d : s.length >= 45 ? s : d.length > 480 ? d.slice(0, 440).replace(/\s+\S*$/, '') + '…' : '';
@@ -165,84 +152,120 @@ function analyze(res, month) {
   for (const i of close) { const k = norm(P.name[i]); if (!k) continue; const e = nm.get(k) || { n: 0, shown: new Map() }; e.n++; e.shown.set(P.name[i].trim(), (e.shown.get(P.name[i].trim()) || 0) + 1); nm.set(k, e); }
   const names = [...nm.values()].sort((a, b) => b.n - a.n).slice(0, 10).map((e) => ({ n: e.n, name: [...e.shown.entries()].sort((a, b) => b[1] - a[1] || (a[0] === a[0].toUpperCase()) - (b[0] === b[0].toUpperCase()))[0][0] }));
 
-  return { kind, related, close, closeCenters, est, scored, scoredCenters: scoredCenters.size, closeScored, hits, when, nearest, flyers, wording, names, distinctNames: nm.size };
+  return { kind, gated, matches, related, close, closeCenters, est, fit, when, nearest, flyers, wording, names, distinctNames: nm.size };
 }
 
 // ---------------------------------------------------------------- result panels
-const tier = (s) => (s >= CLOSE ? 'Close match' : s >= RELATED ? 'Related' : 'Loose');
+const tier = (res, i) => (res.cos[i] >= CLOSE ? 'close match' : res.cos[i] >= RELATED ? 'related' : res.score[i] >= MATCH ? 'shares the wording' : 'loosely related');
 
-function MatchRow({ i, res, onBlue }) {
-  const p = res.cat.prog(i), s = res.strength[i];
+// Where a program landed among its own center's events, with its typical sign-ups under it.
+function Landed({ i, P, soft = 'var(--grey)' }) {
+  if (P.pc[i] == null) return <span className="z-small whitespace-nowrap" style={{ color: soft }}>{P.n[i] === 0 ? 'Not held yet' : 'No sign-ups taken'}</span>;
   return (
-    <li style={{ borderTop: `1px solid ${onBlue ? 'rgba(255,255,255,0.25)' : 'var(--fog-2)'}` }}>
+    <span className="text-right whitespace-nowrap">
+      <span className="font-bold block" style={{ fontSize: '0.92rem' }}>{cap(place(P.pc[i] / 100))}</span>
+      {P.reg[i] != null && <span className="z-small block" style={{ color: soft }}>{plural(Math.round(P.reg[i]), 'sign-up')}</span>}
+    </span>
+  );
+}
+
+function MatchRow({ i, res }) {
+  const p = res.cat.prog(i);
+  return (
+    <li style={{ borderTop: '1px solid var(--fog-2)' }}>
       <Link to={`/program/${p.key}`} className="group grid grid-cols-[minmax(0,1fr)_auto] gap-3 items-center py-3">
         <span className="min-w-0">
           <span className="font-bold block truncate group-hover:underline decoration-2 underline-offset-2">{p.name}</span>
-          <span className="z-small z-muted block truncate">{centerLabel(p.center).replace(/[,\s]+$/, '')}, {tier(s).toLowerCase()}{p.n === 0 && p.up > 0 ? ', coming up' : p.n > 1 ? `, run ${p.n} times` : ''}</span>
+          <span className="z-small z-muted block truncate">{centerLabel(p.center).replace(/[,\s]+$/, '')}, {tier(res, i)}{p.n === 0 && p.up > 0 ? ', coming up' : p.n > 1 ? `, run ${p.n} times` : ''}</span>
         </span>
-        {p.adj != null ? <Lift value={p.adj} size="sm" /> : <span className="z-small z-muted whitespace-nowrap">No sign-up data</span>}
+        <Landed i={i} P={res.cat.programs} />
       </Link>
     </li>
   );
 }
 
-function Verdict({ res, A, month }) {
-  const { cat, engine, q } = res, pr = engine.predictor;
-  const { kind, close, related, closeCenters } = A, nc = closeCenters.size, blue = kind === 'beats';
-  const head = {
-    new: related.length ? 'Nothing close in the network yet' : 'New to the network',
-    rare: `Rare. Only ${plural(nc, 'center')} ${nc === 1 ? 'has' : 'have'} run something close.`,
-    unscored: `${nc} centers have run this, but too few took sign-ups to say how it does.`,
-    beats: `${nc >= 15 ? 'Tried a lot' : 'Tried'}, and it tends to beat normal.`,
-    normal: `${nc >= 15 ? 'Tried a lot' : 'Tried'}, and it runs about normal.`,
-    under: `${nc >= 15 ? 'Tried a lot' : 'Tried'}, and it tends to underperform.`,
-  }[kind];
-  const loose = related.length - close.length;
-  const line = kind === 'new'
-    ? (related.length ? `None of the ${cat.count.toLocaleString()} programs in the network is a close match for "${q}". ${plural(related.length, 'program')} ${related.length === 1 ? 'is' : 'are'} loosely related, which is not enough to estimate anything.` : `None of the ${cat.count.toLocaleString()} programs in the network is close to "${q}", or even loosely related. Either no center has posted it, or it is worded in a way the search does not connect.`)
-    : kind === 'rare' ? `That is too few to estimate how it would do for you. The closest programs are listed with how each one did.`
-    : kind === 'unscored' ? `Only ${plural(A.scored, 'matching program')} at ${plural(A.scoredCenters, 'center')} ${A.scored === 1 ? 'has' : 'have'} sign-up numbers that can be read against the center's normal.`
-    : `Programs like "${q}" have run at ${nc} of ${cat.centers.length} centers. Weighted toward the closest matches, they came in at ${liftWords(A.est)}.`;
+function Tile({ value, label, sub, soft }) {
+  return (
+    <div className="min-w-0">
+      <div className="z-num" style={{ fontSize: 'clamp(1.8rem, 3.4vw, 2.7rem)' }}>{value}</div>
+      <div className="mt-1.5 font-semibold" style={{ lineHeight: 1.25 }}>{label}</div>
+      <div className="z-small mt-0.5" style={{ color: soft }}>{sub}</div>
+    </div>
+  );
+}
+
+function Verdict({ res, A }) {
+  const { cat, engine, q } = res, P = cat.programs, t = engine.predictor?.test?.full;
+  const { kind, close, related, closeCenters, est, fit } = A, { me } = fit, nc = closeCenters.size, loose = related.length - close.length;
+  const blue = kind === 'est' && est.pct >= 0.67;
   const ink = blue ? '#fff' : 'var(--ink)', soft = blue ? 'rgba(255,255,255,0.86)' : 'var(--grey)', rule = blue ? 'rgba(255,255,255,0.25)' : 'var(--fog-2)';
-  const showEst = kind === 'beats' || kind === 'normal' || kind === 'under';
-  const top = res.order.slice(0, 6);
+  const link = blue ? { color: '#fff', textDecorationColor: 'rgba(255,255,255,0.5)' } : undefined;
+  const wordy = A.matches.length - related.length;
+  const head = kind === 'est' ? expectWords(est.pct, !!me)
+    : kind === 'new' ? (A.matches.length ? 'Nothing close enough in the network yet' : 'New to the network')
+    : kind === 'words' ? 'No estimate without the meaning search'
+    : `${plural(nc, 'center')} ${nc === 1 ? 'has' : 'have'} run something like this, but too few took sign-ups to estimate it.`;
+
+  // the range, in sign-ups for a chosen center with a spread, in words otherwise
+  const range = kind === 'est' && me && fit.spread ? signUpRange(signUps(fit.spread, est.lo), signUps(fit.spread, est.hi)) : null;
+  const spanWords = kind === 'est' ? (place(est.lo) === place(est.hi) ? place(est.lo).replace(/^the /, 'in the ') : `anywhere from ${place(est.lo)} to ${place(est.hi)}`) : '';
+  const line = kind === 'est'
+    ? (me
+      ? (range ? `Likely ${range} at ${centerLabel(me)}${fit.typical != null ? `; your typical event draws ${Math.round(fit.typical)}` : ''}.` : `${centerLabel(me)} has too few events with sign-ups to turn that into a number, so this is a place among your events only. Half of the similar results landed ${spanWords} of a center's events.`)
+      : `That is the estimate for a typical center, with every center counted the same. Half of the similar results landed ${spanWords} of their own center's events.`)
+    : kind === 'new'
+      ? (A.matches.length
+        ? `${related.length ? `Only ${plural(related.length, 'program')} of ${cat.count.toLocaleString()} ${related.length === 1 ? 'is' : 'are'} related to "${q}" by meaning` : `None of the ${cat.count.toLocaleString()} programs in the network is related to "${q}" by meaning`}${wordy > 0 ? `, and ${wordy} more share some of its wording` : ''}. That is too little to estimate from, so no estimate is shown.`
+        : `None of the ${cat.count.toLocaleString()} programs in the network is close to "${q}", or even loosely related. Either no center has posted it, or it is worded in a way the search does not connect.`)
+      : kind === 'words' ? `The estimate is read from how close each program is in meaning, and the service that measures that did not answer. The programs below match on wording only.`
+        : `Only ${plural(est?.n || 0, 'related program')} ${est?.n === 1 ? 'has' : 'have'} sign-ups that place ${est?.n === 1 ? 'it' : 'them'} among their own center's events, and an estimate needs at least ${MIN_VOTERS}.`;
+
+  const tiles = me && kind === 'est' && fit.nearCount
+    ? [[close.length, close.length === 1 ? 'close match' : 'close matches', 'programs much like it'], [nc, nc === 1 ? 'center' : 'centers', 'ran a close match'], [fit.nearRan, `of your ${fit.nearCount} nearest centers`, 'ran a close match']]
+    : [[close.length, close.length === 1 ? 'close match' : 'close matches', 'programs much like it'], [loose, 'related', 'same family, different event'], [nc, nc === 1 ? 'center' : 'centers', 'ran a close match']];
+  const mineRun = fit.ownClose[0] != null ? fit.ownClose[0] : null, top = res.order.slice(0, 6);
+  const ownNear = mineRun == null ? fit.own.find((i) => res.cos[i] >= RELATED && P.pc[i] != null) ?? null : null;
+
   return (
     <section aria-labelledby="verdict-h" className="mt-8 grid grid-cols-1 lg:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)] gap-4 items-start">
       <div className="p-6 sm:p-8" style={{ background: blue ? 'var(--go)' : 'var(--fog)', color: ink, borderRadius: 'var(--r-lg)' }}>
         <h2 id="verdict-h" className="z-h1" style={{ fontSize: 'clamp(1.9rem, 3.8vw, 2.9rem)' }}>{head}</h2>
-        <p className="mt-4 max-w-[58ch]" style={{ lineHeight: 1.5, color: soft, fontSize: '1.05rem' }}>{line}</p>
-        <div className="mt-7 grid grid-cols-3 gap-4">
-          {[[close.length, close.length === 1 ? 'close match' : 'close matches', 'programs much like it'], [loose, 'related', 'same family, different event'], [nc, nc === 1 ? 'center' : 'centers', 'ran a close match']].map(([v, l, s]) => (
-            <div key={l} className="min-w-0">
-              <div className="z-num" style={{ fontSize: 'clamp(1.8rem, 3.4vw, 2.7rem)' }}>{v.toLocaleString()}</div>
-              <div className="mt-1.5 font-semibold" style={{ lineHeight: 1.25 }}>{l}</div>
-              <div className="z-small mt-0.5" style={{ color: soft }}>{s}</div>
-            </div>
-          ))}
-        </div>
-        {showEst && (
-          <div className="mt-7 pt-6 grid grid-cols-1 sm:grid-cols-[auto_minmax(0,1fr)] gap-x-8 gap-y-3 items-center" style={{ borderTop: `1px solid ${rule}` }}>
-            <div>
-              <div className="z-num" style={{ fontSize: 'clamp(2.6rem, 5vw, 3.6rem)' }}>{liftShort(A.est)}</div>
-              <div className="font-semibold mt-1">expected lift</div>
-            </div>
-            <p style={{ lineHeight: 1.5, color: soft }}>
-              Against a center's own normal for this kind of event. From {plural(A.scored, 'scored program')} at {plural(A.scoredCenters, 'center')}, the closest counting most.
-              {A.closeScored.length >= 5 && ` ${A.hits} of the ${A.closeScored.length} scored close matches (${pct(A.hits, A.closeScored.length)}%) beat their center's normal by 20% or more.`}
+        <p className="mt-4 max-w-[58ch]" style={{ lineHeight: 1.5, color: range ? ink : soft, fontSize: range ? '1.2rem' : '1.05rem', fontWeight: range ? 600 : 400 }}>{line}</p>
+        <div className="mt-7 grid grid-cols-3 gap-4">{tiles.map(([v, l, s]) => <Tile key={l} value={v.toLocaleString()} label={l} sub={s} soft={soft} />)}</div>
+
+        {kind === 'est' && (
+          <div className="mt-7 pt-6" style={{ borderTop: `1px solid ${rule}`, lineHeight: 1.5 }}>
+            <p className="max-w-[62ch]">
+              {close.length ? `${plural(close.length, 'program')} at ${plural(nc, 'center')} ${close.length === 1 ? 'is a close match' : 'are close matches'} for "${q}".` : `No program is a close match for "${q}", so the estimate leans on ${plural(related.length, 'related program')}.`}
+              {close.length > 0 && close.length < MIN_CLOSE && ` That is thin, so the estimate also leans on ${plural(loose, 'related program')}.`}
+              {me && fit.nearCount > 0 && (fit.nearRan
+                ? ` ${fit.nearRan} of your ${fit.nearCount} nearest centers ran one${fit.nearPct != null ? `, and it landed ${placeOf(fit.nearPct)} on average` : ', but none took sign-ups for it'}.`
+                : ` None of your ${fit.nearCount} nearest centers has run one, so the estimate comes from centers less like yours, which count for less.`)}
+              {me && (mineRun != null
+                ? <> You ran something close yourself: <Link to={`/program/${P.key[mineRun]}`} className="z-link" style={link}>{P.name[mineRun]}</Link>{P.pc[mineRun] != null ? `, which landed ${placeOf(P.pc[mineRun] / 100, 'your')}${P.reg[mineRun] != null ? ` with ${plural(Math.round(P.reg[mineRun]), 'sign-up')}` : ''}. Your own result counts eight times as much as another center's.` : ', with no sign-ups recorded.'}</>
+                : ownNear != null
+                  ? <> You have not run a close match yourself. The nearest thing you ran, <Link to={`/program/${P.key[ownNear]}`} className="z-link" style={link}>{P.name[ownNear]}</Link>, landed {placeOf(P.pc[ownNear] / 100, 'your')}{P.reg[ownNear] != null ? ` with ${plural(Math.round(P.reg[ownNear]), 'sign-up')}` : ''}, and it counts eight times as much as another center's result.</>
+                  : ' You have not run a close match yourself.')}
             </p>
+            {!me && (
+              <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-3">
+                <p className="font-semibold max-w-[40ch]">Choose your center for an answer about yours: where this should land among your own events, and how many sign-ups to expect.</p>
+                <PickCenter cat={cat} />
+              </div>
+            )}
+            {t && (
+              <p className="z-small mt-5 max-w-[66ch]" style={{ color: soft }}>
+                An estimate, not a forecast: in a replay of the last twelve months, the top fifth of these estimates landed in their center's top third {Math.round(t.top_fifth_in_top_third * 100)}% of the time and the bottom fifth {Math.round(t.bottom_fifth_in_top_third * 100)}%{range ? `; sign-up numbers were within a factor of 1.5 only ${Math.round(t.within_1_5x * 100)}% of the time` : ''}. About {Math.max(1, Math.round(est.eff))} past programs carry the weight of this one. <Link to="/engine" className="z-link" style={link}>How it was tested</Link>
+              </p>
+            )}
           </div>
         )}
-        {showEst && pr && (
-          <p className="z-small mt-5" style={{ lineHeight: 1.5, color: soft }}>
-            Read it as a lean, not a forecast: tested on {pr.tested.toLocaleString()} programs the engine had not seen, estimates like this one had a rank correlation of {pr.k40_p8.toFixed(2)} with the real result, and the top fifth of predictions beat normal by 20% or more {Math.round(pr.top_fifth_hit * 100)}% of the time, against {Math.round(pr.bottom_fifth_hit * 100)}% for the bottom fifth.
-          </p>
-        )}
-        {kind === 'new' && <p className="z-small mt-6" style={{ lineHeight: 1.5, color: soft }}>No lift is shown, because there is nothing comparable to read it from. The search reads program names and descriptions, so if you think centers do run this, try the words a flyer would use.</p>}
+        {kind === 'new' && <p className="z-small mt-6 max-w-[62ch]" style={{ lineHeight: 1.5, color: soft }}>The search reads program names and descriptions, so if you think centers do run this, try the words a flyer would use.</p>}
       </div>
       <div className="z-card">
-        <h3 className="font-bold">{kind === 'new' ? 'The nearest programs, none of them close' : 'The closest programs'}</h3>
+        <h3 className="font-bold">{kind === 'new' ? (A.matches.length ? 'The nearest programs' : 'The nearest programs, none of them close') : 'The closest programs'}</h3>
         {top.length ? <ul className="mt-3">{top.map((i) => <MatchRow key={i} i={i} res={res} />)}</ul> : <p className="z-muted mt-3" style={{ lineHeight: 1.5 }}>Nothing in the network comes near this.</p>}
-        <p className="z-small z-muted mt-3" style={{ lineHeight: 1.45 }}>The percentage is how each program did against its own center's normal. Planned for {MONTH_FULL[month - 1]}.</p>
+        {top.length > 0 && <p className="z-small z-muted mt-3" style={{ lineHeight: 1.45 }}>On the right, where each program landed among its own center's events, with its typical sign-ups.</p>}
       </div>
     </section>
   );
@@ -292,36 +315,43 @@ function TimingFit({ res, A, month }) {
   );
 }
 
-function MineFit({ res, A, mine }) {
-  const { data } = useData('centers.json');
-  const { cat, strength } = res, P = cat.programs, me = cat.centerById.get(mine);
-  if (!me || !data) return null;
-  const prof = data[0].profiles[mine];
-  const own = A.related.filter((i) => P.c[i] === me.idx), ownClose = own.filter((i) => strength[i] >= CLOSE);
-  const peerIdx = new Map((prof?.peers || []).map((p) => [cat.centerById.get(p.id)?.idx, p]));
-  const byPeer = new Map();
-  for (const i of A.close) if (peerIdx.has(P.c[i]) && !byPeer.has(P.c[i])) byPeer.set(P.c[i], i); // close is best first
-  const peers = [...byPeer.values()], np = prof?.peers.length || 0;
-  const peerLogs = peers.filter((i) => P.adj[i] != null).map((i) => clampLog(P.adj[i]));
-  const meaning = ownClose.length
-    ? `You have already run this. Your own result (${ownClose[0] != null && P.adj[ownClose[0]] != null ? liftWords(P.adj[ownClose[0]] / 100, 'your') : 'no sign-up data'}) is a better guide than anything the network can say.`
-    : !prof ? `The engine has no peer group for ${centerLabel(me)} yet, so there is no closer comparison than the whole network.`
-    : peers.length >= 3 ? `${peers.length} of your ${np} peers have run it${peerLogs.length >= 3 ? `, at ${liftWords(gm(peerLogs, 2))} between them` : ''}. Their results are the nearest thing to a test on a campus like yours.`
-    : peers.length ? `Only ${peers.length} of your ${np} peers ${peers.length === 1 ? 'has' : 'have'} run it. One or two results say little, so lean on the network numbers above.`
-    : `None of your ${np} peers has run anything close. You would be the first among centers like yours, and the network numbers above come from campuses less like your own.`;
+// The close matches at this center's nearest centers (and at the center itself), one row each.
+function NearFit({ res, A }) {
+  const { cat, q } = res, P = cat.programs, { me, prof, nearCount, nearClose, own } = A.fit;
+  if (!me) return null;
+  const perCenter = new Map(), rows = [];
+  for (const i of nearClose) { const k = perCenter.get(P.c[i]) || 0; if (k >= 2) continue; perCenter.set(P.c[i], k + 1); rows.push(i); }
+  const mineRows = (A.fit.ownClose.length ? A.fit.ownClose : own).slice(0, 3), shown = rows.slice(0, 12);
+  const cols = 'grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_8.5rem_10.5rem] gap-x-5 items-center';
+  const row = (i, you) => { const p = cat.prog(i); return (
+    <li key={i} className={`${cols} py-3.5`} style={{ borderTop: '1px solid var(--fog-2)' }}>
+      <span className="hidden md:block min-w-0 truncate font-semibold">{you ? `${centerLabel(p.center)} (you)` : <CenterLink c={p.center} />}</span>
+      <span className="min-w-0">
+        <Link to={`/program/${p.key}`} className="font-bold block truncate hover:underline decoration-2 underline-offset-2">{p.name}</Link>
+        <span className="z-small z-muted block truncate"><span className="md:hidden">{you ? `${centerLabel(p.center)} (you)` : <CenterLink c={p.center} />}, </span>{tier(res, i)}{p.n > 1 ? `, run ${p.n} times` : p.n === 0 ? ', not held yet' : ''}</span>
+      </span>
+      <span className="hidden md:block text-right tabular-nums font-semibold">{p.reg != null ? Math.round(p.reg) : <span className="z-muted font-normal z-small">none taken</span>}</span>
+      <span className="text-right">
+        <span className="font-bold block" style={{ fontSize: '0.95rem' }}>{P.pc[i] != null ? cap(place(P.pc[i] / 100)) : <span className="z-muted font-normal z-small">Not measured</span>}</span>
+        <span className="md:hidden z-small z-muted block">{p.reg != null ? plural(Math.round(p.reg), 'sign-up') : ''}</span>
+      </span>
+    </li>); };
   return (
-    <Section id="lab-mine-h" title={`At ${centerLabel(me)} and centers like it`} sub={meaning}>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-        <div className="z-card">
-          <h3 className="font-bold">{centerLabel(me)}</h3>
-          {own.length ? <ul className="mt-3">{own.slice(0, 4).map((i) => <MatchRow key={i} i={i} res={res} />)}</ul> : <p className="z-muted mt-3" style={{ lineHeight: 1.5 }}>You have not run anything close or related to this.</p>}
+    <Section id="lab-near-fit-h" title="How it did at centers like yours"
+      sub={!nearCount ? `There is nothing on record to match ${centerLabel(me)} with other centers yet, so there are no nearest centers to read from.`
+        : `Close matches for "${q}" at the ${nearCount} centers most like ${centerLabel(me)} (matched on their biggest events, pace, Jewish population and what does well there). Sign-ups are each program's typical count, and the place is among that center's own events.`}
+      action={<Link to={`/center/${me.id}`} className="z-btn z-btn-soft z-btn-sm">Your center's page<ArrowRight size={16} aria-hidden="true" /></Link>}>
+      {shown.length + mineRows.length === 0 ? (nearCount > 0 && <Empty>None of your {nearCount} nearest centers has run a close match, and neither have you. You would be the first among centers like yours.</Empty>) : (
+        <div>
+          <div className={`${cols} hidden md:grid z-small z-muted font-semibold pb-2`}><span>Center</span><span>Program</span><span className="text-right">Sign-ups</span><span className="text-right">Place among its events</span></div>
+          <ul>
+            {mineRows.map((i) => row(i, true))}
+            {shown.map((i) => row(i, false))}
+          </ul>
+          {!shown.length && nearCount > 0 && <p className="z-small z-muted mt-3">None of your {nearCount} nearest centers has run a close match.</p>}
+          {prof && rows.length > shown.length && <p className="z-small z-muted mt-3">Showing {shown.length} of {rows.length}.</p>}
         </div>
-        <div className="z-card">
-          <h3 className="font-bold">{prof ? `Your ${np} nearest peers` : 'Peers'}</h3>
-          {peers.length ? <ul className="mt-3">{peers.slice(0, 8).map((i) => <MatchRow key={i} i={i} res={res} />)}</ul> : <p className="z-muted mt-3" style={{ lineHeight: 1.5 }}>{prof ? 'None of them has run a close match.' : 'No peer group yet.'}</p>}
-          <Link to={`/center/${mine}`} className="z-btn z-btn-soft z-btn-sm mt-4" style={{ background: '#fff' }}>Your center's page<ArrowRight size={16} aria-hidden="true" /></Link>
-        </div>
-      </div>
+      )}
     </Section>
   );
 }
@@ -343,21 +373,21 @@ function NearCard({ x, typeLabel }) {
 }
 
 function Results({ res, month, mine }) {
-  const A = useMemo(() => analyze(res, month), [res, month]);
+  const A = useMemo(() => analyze(res, month, mine), [res, month, mine]);
   const { cat } = res, isNew = A.kind === 'new';
   return (
     <div>
-      {res.embedError && <p className="mt-6 z-note" role="status" style={{ lineHeight: 1.45 }}>The meaning search failed: {res.embedError.message.replace(/\.$/, '')}. These results fall back to matching the words of your idea against program names, so events worded differently are missed and the counts are rougher than usual.</p>}
-      <Verdict res={res} A={A} month={month} />
+      {res.embedError && <p className="mt-6 z-note" role="status" style={{ lineHeight: 1.45 }}>The meaning search failed: {res.embedError.message.replace(/\.$/, '')}. These results fall back to matching the words of your idea against program names, so events worded differently are missed, the counts are rougher than usual and no estimate is made.</p>}
+      <Verdict res={res} A={A} />
+      {!isNew && A.fit.me && <NearFit res={res} A={A} />}
       {!isNew && <TimingFit res={res} A={A} month={month} />}
-      {!isNew && mine && <MineFit res={res} A={A} mine={mine} />}
       {A.nearest.length > 0 && (
-        <Section id="lab-near-h" title={isNew ? 'The nearest ideas, loosely related' : 'Closest ideas and Shabbat themes'} sub="An idea is the same program run by several centers. Each card opens its full record: every center, every flyer, how it did.">
+        <Section id="lab-near-h" title={isNew ? 'The nearest ideas, loosely related' : 'Closest ideas and Shabbat themes'} sub="An idea is the same program run by several centers. Each card opens its full record: every center, every flyer, how it did. The percentage on a card is the idea's own score against each center's normal for that kind of event, which is a different yardstick from the estimate above.">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">{A.nearest.map((x) => <NearCard key={x.key} x={x} typeLabel={x.idea ? cat.types[x.idea.type] : null} />)}</div>
         </Section>
       )}
       {A.flyers.length > 0 && (
-        <Section id="lab-fly-h" title={isNew ? 'Flyers from the loosely related programs' : 'Flyers'} sub="The best matches that posted a flyer, at most two from any center. Sign-ups are that program's typical count; the percentage is against that center's normal.">
+        <Section id="lab-fly-h" title={isNew ? 'Flyers from the loosely related programs' : 'Flyers'} sub="The best matches that posted a flyer, at most two from any center. Sign-ups are that program's typical count; the percentage is against that center's normal for the same kind of event.">
           <FlyerGrid>{A.flyers.map((i) => <ProgramCard key={i} p={cat.prog(i)} />)}</FlyerGrid>
         </Section>
       )}
@@ -514,7 +544,7 @@ export default function Ideas() {
   const count = data ? data[2].count.toLocaleString() : '13,000';
   return (
     <div>
-      <PageHead title="Idea lab" lede={`Describe an event you are thinking of running. The lab compares it with all ${count} programs in the network and shows who has run something like it, how it did against their own normal, when it is run and how they packaged it.`} />
+      <PageHead title="Idea lab" lede={`Describe an event you are thinking of running. The lab compares it with all ${count} programs in the network and estimates where it would land among your own events, from how similar events did at the centers most like yours. It also shows when it is run and how others packaged it.`} />
       <form className="mt-9 p-5 sm:p-7" style={{ background: 'var(--fog)', borderRadius: 'var(--r-lg)' }} onSubmit={(e) => { e.preventDefault(); go(draft); }} role="search" aria-label="Test an event idea">
         <label htmlFor="lab-q" className="z-h3 block" style={{ fontFamily: 'var(--font-display)', fontWeight: 700 }}>Describe an event idea</label>
         <div className="mt-4 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto_auto] gap-3">

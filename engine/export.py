@@ -7,7 +7,7 @@ from collections import Counter
 from scipy.stats import spearmanr
 from sklearn.decomposition import PCA
 from . import embed
-from .common import OUT, IMG_PREFIX, dump, log, r
+from .common import OUT, WORK, IMG_PREFIX, dump, log, r
 from .types import TYPES, EVENT_TYPES
 
 EPOCH = dt.date(2020, 1, 1)
@@ -22,6 +22,25 @@ def img_short(s):
     return s if not isinstance(s, str) else s
 
 
+def _prior_axes(d):
+    """The search axes from the last run: from the work folder, or from the published projection file."""
+    try:
+        a = np.load(f"{WORK}/axes.npy")
+        if a.shape == (K, d):
+            return a.astype(np.float32)
+    except Exception:
+        pass
+    try:
+        edge = os.environ.get("EDGE_URL", "https://campus-playbook.shneur.workers.dev")
+        with urllib.request.urlopen(urllib.request.Request(f"{edge}/data/proj.bin", headers={"user-agent": "campus-playbook-engine"}), timeout=60) as resp:
+            f = np.frombuffer(resp.read(), dtype=np.float32)
+        if int(f[0]) == d and int(f[1]) == K:
+            return f[2 + d:2 + d + K * d].reshape(K, d).copy()
+    except Exception:
+        pass
+    return None
+
+
 def project(V, mu_name):
     """Reduce to K dimensions for the in-browser search. Returns the int8 matrix, the projection file, and recall.
 
@@ -32,6 +51,14 @@ def project(V, mu_name):
     w, U = np.linalg.eigh((V.T @ V).astype(np.float64))
     comp = U[:, np.argsort(-w)[:K]].T.astype(np.float32)
     kept = float(np.sort(w)[::-1][:K].sum() / w.sum())
+    # Keep yesterday's axes when they still fit. A fresh fit can rotate the weaker axes from one day to the next, and
+    # for a few minutes after a run the Worker and open browser tabs would then disagree about the space.
+    prior = _prior_axes(V.shape[1])
+    if prior is not None:
+        kept_prior = float(((V @ prior.T) ** 2).sum() / (V ** 2).sum())
+        if kept_prior >= kept - 0.01:
+            comp, kept = prior, kept_prior
+    np.save(f"{WORK}/axes.npy", comp)
     X = V @ comp.T
     Xn = embed.unit(X)
     q8 = np.clip(np.round(Xn / np.abs(Xn).max(1, keepdims=True) * 127), -127, 127).astype(np.int8)

@@ -4,6 +4,8 @@ import { Link, useParams } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import { useData, useMyCenter, plural, centerLabel, liftShort, liftWords, liftPct, fmtDate, hourLabel, DAYS, DAY3, MONTHS, CONF } from '../lib/data';
 import { PageHead, Section, Loading, ErrorNote, Empty, Lift, StatusPill, ProgramCard, FlyerGrid, Columns, CenterLink, More } from '../components/bits';
+import { place, placeOf, expectWords, signUpRange } from '../lib/search';
+import { PickCenter } from './Home';
 
 const MONTH_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const AUD = { women: 'Women', men: 'Men', freshmen: 'First-year students', seniors: 'Seniors', grads: 'Grad students', parents: 'Parents and families', greek: 'Greek life', community: 'The wider community', faculty: 'Faculty', israelis: 'Israelis', athletes: 'Athletes' };
@@ -38,22 +40,77 @@ function Fact({ label, value, children }) {
   );
 }
 
-// Whether "my center" has run this idea, and how many of its peers have.
-function MineNote({ idea, cat, mine }) {
-  const { data } = useData('centers.json');
+const cap = (x) => x.replace(/^the /, '').replace(/^./, (c) => c.toUpperCase());
+
+// "At centers like yours": the engine's estimate for this idea at "my center" (when the idea is among its picks),
+// and how the idea's programs did at that center's nearest centers. All of it was computed by the engine
+// (engine/centers.py, engine/neighbors.py); this only lays it out.
+function AtCentersLikeYours({ idea, cat, mine }) {
+  const { data, error } = useData('centers.json');
   const me = cat.centerById.get(mine);
   if (!me) return null;
+  if (error) return <ErrorNote error={error} what="The center data" />;
+  if (!data) return <Section id="like-h" title="At centers like yours" tight><div className="z-skel" style={{ height: 180 }} /></Section>;
+  const cen = data[0], prof = cen.profiles[mine], st = cen.stats[mine] || {}, P = cat.programs;
+  const near = prof?.near || [], order = new Map(near.map((x, k) => [x.id, k]));
   const progs = idea.programs.map((p) => cat.prog(p)).filter(Boolean);
   const own = progs.filter((p) => p.center.id === mine);
-  const peers = data?.[0].profiles[mine]?.peers || [];
-  const ran = new Set(progs.map((p) => p.center.id)), peerRan = peers.filter((p) => ran.has(p.id)).map((p) => cat.centerById.get(p.id)).filter(Boolean);
+  const there = progs.filter((p) => order.has(p.center.id)).sort((x, y) => order.get(x.center.id) - order.get(y.center.id) || y.n - x.n);
+  const ran = new Set(there.map((p) => p.center.id)).size;
+  const pick = prof ? [...prof.picks.new, ...prof.picks.again].find((x) => x.idea === idea.id) : null;
+  const isNew = !!pick && prof.picks.new.includes(pick), range = pick ? signUpRange(pick.lo, pick.hi) : null, blue = !!pick && pick.pct >= 0.67;
+  const soft = blue ? 'rgba(255,255,255,0.88)' : 'var(--grey)';
+  const row = (p, you) => (
+    <li key={p.key} className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 items-center py-3" style={{ borderTop: '1px solid var(--fog-2)' }}>
+      <span className="min-w-0">
+        <Link to={`/program/${p.key}`} className="font-bold block truncate hover:underline decoration-2 underline-offset-2">{p.name}</Link>
+        <span className="z-small z-muted block truncate">{you ? `${centerLabel(p.center)} (you)` : <CenterLink c={p.center} />}{p.n > 1 ? `, run ${p.n} times` : p.n === 0 ? ', not held yet' : ''}</span>
+      </span>
+      <span className="text-right whitespace-nowrap">
+        {P.pc[p.i] != null ? <span className="font-bold block" style={{ fontSize: '0.95rem' }}>{cap(place(P.pc[p.i] / 100))}</span> : <span className="z-small z-muted block">{p.n === 0 ? 'Not held yet' : 'No sign-ups taken'}</span>}
+        {p.reg != null && <span className="z-small z-muted block">{plural(Math.round(p.reg), 'sign-up')}</span>}
+      </span>
+    </li>
+  );
   return (
-    <div className="mt-4 z-note" style={{ lineHeight: 1.5 }}>
-      {own.length ? (
-        <p><span className="font-bold">{centerLabel(me)} has run this.</span> {own.slice(0, 3).map((p, k) => (
-          <span key={p.key}>{k > 0 && ' '}<Link to={`/program/${p.key}`} className="z-link">{p.name}</Link>{p.n > 0 ? `, ${plural(p.n, 'time')}` : ', coming up'}{p.adj != null ? `, ${liftWords(p.adj, 'your')}.` : ', no sign-up data.'}</span>))}</p>
-      ) : <p><span className="font-bold">{centerLabel(me)} has not run this.</span>{peers.length > 0 && ` ${peerRan.length ? `${peerRan.length} of your ${peers.length} nearest peers ${peerRan.length === 1 ? 'has' : 'have'}` : `None of your ${peers.length} nearest peers has either`}.`}</p>}
-      {!own.length && peerRan.length > 0 && <p className="z-small mt-1">{peerRan.slice(0, 8).map((c, k) => <span key={c.id}>{k > 0 && ', '}<CenterLink c={c} /></span>)}</p>}
+    <Section id="like-h" title="At centers like yours" tight sub={near.length ? `The ${near.length} centers most like ${centerLabel(me)}, matched on their biggest events, pace, Jewish population and what does well there. A place is where a program landed among that center's own events.` : null}>
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)] gap-4 items-start">
+        <div className="z-card" style={blue ? { background: 'var(--go)', color: '#fff' } : undefined}>
+          {pick ? (
+            <>
+              <p className="font-semibold">The engine's estimate for {centerLabel(me)}</p>
+              <h3 className="z-h1 mt-3" style={{ fontSize: 'clamp(1.7rem, 3vw, 2.3rem)' }}>{expectWords(pick.pct)}</h3>
+              <p className="mt-3 font-semibold" style={{ fontSize: '1.08rem', lineHeight: 1.45 }}>{range ? `Likely ${range}${st.typical != null ? `; your typical event draws ${Math.round(st.typical)}` : ''}.` : `${centerLabel(me)} has too few events with sign-ups to turn that into a number.`}</p>
+              <p className="mt-3" style={{ lineHeight: 1.5, color: soft }}>
+                {near.length > 0 && (pick.near ? `${pick.near} of your ${near.length} nearest centers ran it${pick.near_pct != null ? `, and it landed ${placeOf(pick.near_pct)} on average` : ', but none took sign-ups for it'}.` : `None of your ${near.length} nearest centers has run it, so the estimate comes from centers less like yours.`)}
+                {pick.mine ? ` You ran it ${pick.mine.runs === 1 ? 'once' : `${pick.mine.runs} times`}: it landed ${placeOf(pick.mine.pct, 'your')}${pick.mine.regs != null ? ` with ${plural(Math.round(pick.mine.regs), 'sign-up')}` : ''}.` : isNew ? ' You have not run it.' : ''}
+              </p>
+              <p className="z-small mt-4" style={{ lineHeight: 1.45, color: soft }}>An estimate from similar events at similar centers, with about {Math.max(1, Math.round(pick.eff))} past programs carrying the weight. Read the place before the numbers. <Link to="/engine" className="z-link" style={blue ? { color: '#fff', textDecorationColor: 'rgba(255,255,255,0.5)' } : undefined}>How it is tested</Link></p>
+            </>
+          ) : (
+            <>
+              <p className="font-semibold">{own.length ? `${centerLabel(me)} has run this` : `${centerLabel(me)} has not run this`}</p>
+              <p className="mt-3 z-muted" style={{ lineHeight: 1.5 }}>{!prof || prof.basis === 'none' ? `There is nothing on record to match ${centerLabel(me)} with other centers yet, so the engine makes no estimate for it.` : `This idea is not among the engine's picks for ${centerLabel(me)}. The picks keep only the ideas expected to land highest among your events, so no estimate is stored for this one.`}</p>
+              <Link to={`/ideas?q=${encodeURIComponent(idea.label)}`} className="z-btn z-btn-soft z-btn-sm mt-4" style={{ background: '#fff' }}>Estimate it in the lab<ArrowRight size={16} aria-hidden="true" /></Link>
+            </>
+          )}
+        </div>
+        <div className="z-card" style={{ paddingBottom: '1rem' }}>
+          <h3 className="font-bold">{near.length ? (ran ? `${ran} of your ${near.length} nearest centers ${ran === 1 ? 'has' : 'have'} run it` : `None of your ${near.length} nearest centers has run it`) : 'No nearest centers yet'}</h3>
+          {own.length + there.length > 0
+            ? <More count={Math.max(0, there.length - 8)} label="Show the other">{(open) => <ul className="mt-3">{own.slice(0, 3).map((p) => row(p, true))}{(open ? there : there.slice(0, 8)).map((p) => row(p, false))}</ul>}</More>
+            : <p className="z-muted mt-2" style={{ lineHeight: 1.5 }}>{near.length ? 'The programs further down this page come from centers less like yours.' : 'Nearest centers are worked out once a center has events or campus numbers on record.'}</p>}
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+function LikeYoursPrompt({ cat }) {
+  return (
+    <div className="mt-6 z-card flex flex-wrap items-center justify-between gap-x-8 gap-y-3" style={{ padding: '1.1rem 1.4rem' }}>
+      <p className="font-semibold" style={{ lineHeight: 1.45 }}>Choose your center to see how this did at the centers most like yours.</p>
+      <PickCenter cat={cat} />
     </div>
   );
 }
@@ -136,7 +193,7 @@ export default function Idea() {
           {CONF[i.confidence]}: {plural(i.n_scored, 'scored run')} at {plural(i.centers_scored, 'center')}, out of {plural(i.n, 'run')} at {plural(i.centers, 'center')}.{i.med_regs != null ? ` A typical run draws ${Math.round(i.med_regs)} sign-ups.` : ''}
         </Panel>
       </div>
-      {mine && <MineNote idea={i} cat={cat} mine={mine} />}
+      {mine && cat.centerById.get(mine) ? <AtCentersLikeYours idea={i} cat={cat} mine={mine} /> : <LikeYoursPrompt cat={cat} />}
 
       <Section id="when-h" title="When it is run" sub={`Counted over ${plural(total, 'past run')}. The current month is in blue.`}>
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] gap-4 items-start">

@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, MapPin } from 'lucide-react';
 import { useData, useMyCenter, fmtDate, fmtDay, plural, centerLabel, liftShort } from '../lib/data';
-import { Section, Loading, ErrorNote, Flyer, Lift, StatusPill, Seg, Stat, ProgramCard, FlyerGrid, Empty, CenterLink } from '../components/bits';
+import { Section, Loading, ErrorNote, Flyer, Lift, Seg, Stat, FlyerGrid, Empty } from '../components/bits';
+import { expectWords, signUpRange } from '../lib/search';
 
 const HOL_NOTE = (h) => (h.days === 0 ? 'today' : h.days === 1 ? 'tomorrow' : `in ${h.days} days`);
 
@@ -60,19 +61,51 @@ function IdeaTile({ t, cat, note }) {
   );
 }
 
-function Gaps({ mine, centers, ideas, cat }) {
-  const prof = centers.profiles[mine];
-  const me = cat.centerById.get(mine);
-  if (!prof || !prof.gaps.length) return null;
-  const byId = new Map(ideas.map((i) => [i.id, i]));
+// A plain menu for choosing "my center" where a page needs one. The header's "Your center" button sets the same thing.
+export function PickCenter({ cat }) {
+  const [mine, setMine] = useMyCenter();
+  const list = useMemo(() => [...cat.centers].sort((a, b) => (a.campus || a.name).localeCompare(b.campus || b.name)), [cat]);
   return (
-    <Section id="gaps-h" title={`Centers like ${centerLabel(me)} run these. You never have.`} sub={`Your twelve closest matches on kind of campus, Jewish population, draw and what they program. An idea is listed when at least three of them ran it in the last three years.`} action={<Link to={`/center/${mine}`} className="z-btn z-btn-soft z-btn-sm">Your center's page</Link>}>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {prof.gaps.slice(0, 9).map((g) => { const i = byId.get(g.idea); if (!i) return null; return (
-          <Link key={g.idea} to={`/idea/${g.idea}`} className="z-card flex items-center justify-between gap-4">
-            <div className="min-w-0"><p className="font-bold truncate">{i.label}</p><p className="z-small z-muted mt-0.5">{g.peers} of your 12 peers, {plural(i.centers, 'center')} overall</p></div>
-            <Lift value={g.lift} size="sm" />
-          </Link>); })}
+    <label className="inline-flex items-center gap-2 font-semibold max-w-full" style={{ background: '#fff', color: 'var(--ink)', borderRadius: 999, height: '2.9rem', padding: '0 1.1rem', width: '21rem' }}>
+      <MapPin size={17} aria-hidden="true" style={{ flex: 'none' }} />
+      <select aria-label="Choose your center" value={mine || ''} onChange={(e) => setMine(Number(e.target.value) || null)} className="font-bold bg-transparent min-w-0 flex-1" style={{ height: '100%', cursor: 'pointer', outline: 'none', textOverflow: 'ellipsis' }}>
+        <option value="">Choose your center</option>
+        {list.map((c) => <option key={c.id} value={c.id}>{c.campus || c.name}</option>)}
+      </select>
+    </label>
+  );
+}
+
+// What the neighbor system expects to do well at "my center": ideas it has never run, by expected place.
+function Picks({ mine, centers, ideas, cat }) {
+  const prof = centers.profiles[mine], me = cat.centerById.get(mine);
+  if (!prof || !me) return null;
+  const picks = prof.picks.new.map((x) => ({ ...x, i: ideas[x.idea] })).filter((x) => x.i).slice(0, 6), nn = prof.near.length;
+  const flyer = (i) => i.flyers.map((p) => cat.prog(p)?.img).find(Boolean) || null;
+  return (
+    <Section id="picks-h" title={`Should do well at ${centerLabel(me)}`} sub={`Ideas you have never run, ranked by where the engine expects them to land among your own events. Each estimate comes from how similar events did at the centers most like yours, and it is an estimate, so read the place before the numbers.`}
+      action={<Link to={`/center/${mine}`} className="z-btn z-btn-soft z-btn-sm">The full list for your center<ArrowRight size={16} aria-hidden="true" /></Link>}>
+      {picks.length ? (
+        <FlyerGrid cols="grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
+          {picks.map((x) => { const range = signUpRange(x.lo, x.hi); return (
+            <Link key={x.idea} to={`/idea/${x.idea}`} className="block group min-w-0">
+              <Flyer src={flyer(x.i)} alt="" />
+              <p className="font-bold mt-2.5 z-clamp2 group-hover:underline decoration-2 underline-offset-2" style={{ lineHeight: 1.22 }}>{x.i.label}</p>
+              <p className="z-small font-semibold mt-1" style={{ lineHeight: 1.35 }}>{expectWords(x.pct)}</p>
+              <p className="z-small z-muted mt-0.5" style={{ lineHeight: 1.35 }}>{range ? `Likely ${range}. ` : ''}{nn > 0 ? `${x.near} of your ${nn} nearest centers ran it.` : ''}</p>
+            </Link>); })}
+        </FlyerGrid>
+      ) : <Empty>{prof.basis === 'none' ? `There is nothing on record to match ${centerLabel(me)} with other centers yet, so the engine has no picks for it.` : `No idea that ${centerLabel(me)} has not already run is expected to land in the upper part of its events. The center's page lists what to run again.`}</Empty>}
+    </Section>
+  );
+}
+
+function PicksPrompt({ cat }) {
+  return (
+    <Section id="picks-h" title="What should do well at your center">
+      <div className="z-card flex flex-wrap items-center justify-between gap-x-8 gap-y-4">
+        <p className="max-w-[58ch]" style={{ lineHeight: 1.5 }}>Choose your center and this page lists the ideas you have never run that the engine expects to land high among your own events, judged from similar events at the centers most like yours.</p>
+        <PickCenter cat={cat} />
       </div>
     </Section>
   );
@@ -80,8 +113,8 @@ function Gaps({ mine, centers, ideas, cat }) {
 
 export default function Home() {
   const { data, error } = useData('home.json', 'themes.json', 'catalog');
-  const extra = useData('centers.json', 'ideas.json');
   const [mine] = useMyCenter();
+  const extra = useData(...(mine ? ['centers.json', 'ideas.json'] : []));   // only needed for a chosen center
   const [tab, setTab] = useState('hot');
   if (error) return <ErrorNote error={error} what="The front page" />;
   if (!data) return <Loading rows={3} h={220} />;
@@ -140,7 +173,7 @@ export default function Home() {
         </div>
       </Section>
 
-      {mine && extra.data && <Gaps mine={mine} centers={extra.data[0]} ideas={extra.data[1]} cat={cat} />}
+      {mine ? extra.data && extra.data.length === 2 && <Picks mine={mine} centers={extra.data[0]} ideas={extra.data[1]} cat={cat} /> : <PicksPrompt cat={cat} />}
 
       <Section id="go-h" title="Where to go from here" tight>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

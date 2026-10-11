@@ -51,17 +51,22 @@ def center_words(center_row):
     return out
 
 
-def name_text(name, own=()):
+def name_text(name, own=(), keep_numbers=False):
+    """The event's name with dates, times, places and the center's own name taken out. `keep_numbers` is for
+    display labels, where "Seder 2" should stay "Seder 2"."""
     s = _base(name)
     s = _URL.sub(" ", s)
     s = re.sub(r"\([^)]*\d[^)]*\)", " ", s)             # "(Early, 5:30pm)"
-    s = _TIME.sub(" ", s); s = _DATE.sub(" ", s); s = _PRICE.sub(" ", s); s = _NUM.sub(" ", s)
+    s = _TIME.sub(" ", s); s = _DATE.sub(" ", s); s = _PRICE.sub(" ", s)
+    if not keep_numbers:
+        s = _NUM.sub(" ", s)
     s = _PLACE.sub(" ", s)
     if own:
         s = " ".join(w for w in s.split() if w.strip(".,!?:;'\"()@#").lower() not in own)
     s = re.sub(r"\bchabad('s)?\b", " ", s, flags=re.I) if len(re.sub(r"\bchabad('s)?\b", "", s, flags=re.I).strip(" -:!@&")) >= 4 else s
     s = re.sub(r"[!?*~_|]+", " ", s)
     s = re.sub(r"\s*[-:–@&,/]+\s*$", "", _WS.sub(" ", s)).strip(" -:–@&,/.")
+    s = re.sub(r"(\s+(at|with|for|of|in|on|the|and|x|w/|@))+$", "", s, flags=re.I).strip(" -:–@&,/.")     # "Seder 1 with Chabad at UVM" -> "Seder 1"
     s = _case(s)
     return s if len(s) >= 2 else _WS.sub(" ", _base(name)).strip() or "event"
 

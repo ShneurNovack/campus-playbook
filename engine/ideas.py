@@ -14,7 +14,7 @@ import numpy as np
 from collections import Counter, defaultdict
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import AgglomerativeClustering
-from . import embed, calendars as cal
+from . import embed, textprep, calendars as cal
 from .common import r, title_case, log
 from .types import TYPES
 
@@ -81,7 +81,7 @@ def cluster(P, V):
 
 _FOLD = [(r"hamm?[ae]nt[ae]s(ch|h)?(en|in)?", "hamantash"), (r"\b(c?h)an+uk+a?h?\b", "chanukah"), (r"\bsuc?k+[ao]h?\b", "sukkah"), (r"\bsuc?k+o[ts]h?\b", "sukkot"),
          (r"hashanah?", "hashana"), (r"\bbaking\b", "bake"), (r"\b(pesach|passover)\b", "passover"), (r"\bshavuos\b", "shavuot"), (r"\bshabbos\b", "shabbat"),
-         (r"\bbar[- ]?b[- ]?q(ue)?\b|\bbarbe[cq]ue\b", "bbq"), (r"\bcha[- ]?bbq\b", "chabbq"), (r"\b(19|20)\d\d\b|\b\d+(st|nd|rd|th)\b", " ")]
+         (r"\bbar[- ]?b[- ]?q(ue)?\b|\bbarbe[cq]ue\b", "bbq"), (r"\bcha[- ]?ba?[- ]?b?bq\b", "bbq"), (r"\b(19|20)\d\d\b|\b\d+(st|nd|rd|th)\b", " ")]
 _DROP = {"the", "a", "an", "annual", "chabad", "chabad's", "at", "with", "our", "and", "for", "of", "to", "in", "on", "night", "event", "edition", "pm", "am"}
 
 
@@ -142,7 +142,11 @@ def build(P, V, events, centers, today):
             nc[n_] += 1
         top = nc.most_common(1)[0][0]
         disp = Counter(g.loc[g["nname"] == top, "name"]).most_common(1)[0][0]
-        label = disp if (disp != disp.upper() and disp != disp.lower()) else title_case(top)
+        # the label is the most common name, without the dates, places and school names one center put in it
+        src = g.loc[(g["nname"] == top) & (g["name"] == disp), "center"].iloc[0]
+        tidy = textprep.name_text(disp, textprep.center_words(centers.loc[src].to_dict()) if src in centers.index else (), keep_numbers=True)
+        disp = tidy if len(tidy) >= 3 else disp
+        label = disp if (disp != disp.upper() and disp != disp.lower()) else title_case(disp.lower())
         years = defaultdict(set)
         for d, c in zip(ran["date"], ran["center"]):
             years[_ay(d)].add(c)

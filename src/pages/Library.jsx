@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Search, X } from 'lucide-react';
 import { useData, load, plural, centerLabel } from '../lib/data';
 import { PageHead, Loading, ErrorNote, Empty, Lift, Seg, FlyerGrid, useDebounced } from '../components/bits';
-import { searchIndex, embed, scoreText, wordMatch } from '../lib/search';
+import { searchIndex, embed, scoreAll, wordingMatch, blend, isMatch } from '../lib/search';
 
 // ---- shared with Program.jsx
 
@@ -62,8 +62,8 @@ export function LibCard({ p, hideCenter }) {
 const PAGE = 36;
 const MIN_PILL = 10;         // a holiday or audience needs this many programs to get a pill
 const DEFAULTS = { time: 'all', view: 'flyers' };   // not written to the URL
-const LEXICAL = 0.12;        // same blend as searchText in search.js
-const FLYER_PUSH = 0.08;     // added to a match's score in the flyer grid when it has a flyer
+const FLYER_PUSH = 0.05;     // added to a match's score in the flyer grid when it has a flyer
+const WORDS_ONLY = 0.3;      // the wording match a name needs when the meaning search did not answer
 const EXAMPLES = ['sushi', 'welcome back bbq', 'purim party', 'mezuzah', 'something for freshmen', 'study break during finals'];
 
 function useLazy(name, on) {
@@ -118,7 +118,6 @@ function CopyRow({ p, text }) {
 
 export default function Library() {
   const { data, error } = useData('catalog');
-  const engine = useData('engine.json');
   const [sp, setSp] = useSearchParams();
   const q = (sp.get('q') || '').trim();
   const type = sp.get('type') || '', hol = sp.get('hol') || '', aud = sp.get('aud') || '';
@@ -138,7 +137,7 @@ export default function Library() {
   useEffect(() => { if (slow === box && slow.trim() !== q) set({ q: slow.trim() }); }, [slow]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // One embed call per query, never two inside 600 ms. If the embed service fails, name matching still answers.
-  const [found, setFound] = useState(null);       // { q, score, semantic }
+  const [found, setFound] = useState(null);       // { q, score, match, semantic }
   const [busy, setBusy] = useState(false);
   const [searchErr, setSearchErr] = useState(null);
   const lastCall = useRef(0);
@@ -150,13 +149,15 @@ export default function Library() {
       lastCall.current = Date.now();
       try {
         const ix = await searchIndex();
-        const words = wordMatch(ix, q);
+        const words = wordingMatch(ix, q);
         let sims = null, err = null;
-        try { sims = scoreText(ix, await embed(q)); } catch (e) { err = e; }
+        try { sims = scoreAll(ix, await embed(q)); } catch (e) { err = e; }
         if (!live) return;
-        const score = new Float32Array(ix.n);
-        for (let i = 0; i < ix.n; i++) score[i] = sims ? sims[i] + LEXICAL * words[i] : words[i];
-        setFound({ q, score, semantic: !!sims }); setSearchErr(err);
+        // score orders the results: the cosine blended with the wording match (search.js). A match is a program
+        // related in meaning (cosine of 0.45 or more), or one the wording carries over the line.
+        const score = new Float32Array(ix.n), match = new Uint8Array(ix.n);
+        for (let i = 0; i < ix.n; i++) { score[i] = sims ? blend(sims[i], words[i]) : words[i]; match[i] = sims ? isMatch(sims[i], words[i]) : words[i] >= WORDS_ONLY; }
+        setFound({ q, score, match, semantic: !!sims }); setSearchErr(err);
       } catch (e) { if (live) { setFound(null); setSearchErr(e); } }
       if (live) setBusy(false);
     }, Math.max(0, 600 - (Date.now() - lastCall.current)));
@@ -196,8 +197,6 @@ export default function Library() {
     return s;
   }, [cat, today]);
 
-  // A match is anything closer to the query than 99% of random pairs of programs (measured by the engine).
-  const cut = found?.semantic ? (engine.data?.[0]?.search?.random_p99 ?? 0.38) : 0.34;
   const searching = !!found && q.length >= 2;
   const list = useMemo(() => {
     if (!cat) return null;
@@ -217,10 +216,10 @@ export default function Library() {
     // In the flyer grid a match with a flyer gets a small push up the order (it never adds or removes a match).
     // In the copy list closeness alone decides.
     const s = found.score, push = view === 'flyers' ? FLYER_PUSH : 0, key = (i) => s[i] + (P.img[i] ? push : 0);
-    const hits = idx.filter((i) => s[i] >= cut).sort((a, b) => key(b) - key(a));
+    const hits = idx.filter((i) => found.match[i]).sort((a, b) => key(b) - key(a));
     if (hits.length) return { ids: hits, near: false, pool: idx.length };
     return { ids: idx.sort((a, b) => s[b] - s[a]).slice(0, 12), near: true, pool: idx.length };
-  }, [cat, browse, found, searching, cut, type, hol, aud, flyer, good, time, today, view]);
+  }, [cat, browse, found, searching, type, hol, aud, flyer, good, time, today, view]);
 
   const sig = [q, type, hol, aud, flyer, good, time].join('|');
   const [more, setMore] = useState({ sig, n: PAGE });
@@ -243,7 +242,7 @@ export default function Library() {
 
   return (
     <div>
-      <PageHead title="Flyer and copy library" lede={`See how other centers package an event: the flyer, the name and the wording. ${cat.count.toLocaleString()} programs from ${cat.centers.length} centers, ${options.flyers.toLocaleString()} of them with a flyer. Search reads meaning, so "cookout" also finds a BBQ.`} />
+      <PageHead title="Flyer and copy library" lede={`See how other centers package an event: the flyer, the name and the wording. ${cat.count.toLocaleString()} programs from ${cat.centers.length} centers, ${options.flyers.toLocaleString()} of them with a flyer. Search reads meaning as well as wording, so "barbecue" also finds a BBQ.`} />
 
       <form onSubmit={submit} role="search" className="mt-9 flex items-stretch gap-2.5">
         <div className="relative flex-1 min-w-0">

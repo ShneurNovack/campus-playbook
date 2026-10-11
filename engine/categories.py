@@ -60,7 +60,7 @@ FACETS = [
     {"key": "signups", "label": "Use of sign-ups", "question": "How does it use the sign-up system?",
      "basis": "The share of the last three years' events that took at least one sign-up. This decides how much of the center's calendar can be read at all.",
      "values": [("s4", "Nearly everything", "80% or more of its events took sign-ups."), ("s3", "Most events", "50% to 79% took sign-ups."), ("s2", "Some events", "15% to 49% took sign-ups."),
-                ("s1", "Rarely", "Under 15% took sign-ups. The system is used as a calendar."), ("unknown", "Too few events to tell", "Fewer than 15 events on the system.")]},
+                ("s1", "Rarely", "Under 15% took sign-ups. The system is used as a calendar."), ("unknown", "Too few events to tell", "Fewer than 15 events in the last three years.")]},
     {"key": "stage", "label": "Stage on the system", "question": "Where is it in its life on the sign-up system?",
      "basis": "First and latest event, and the last twelve months of events against the twelve before.",
      "values": [("new", "New to the system", "Its first event on the sign-up system was in the last 18 months. The center itself may be much older."),

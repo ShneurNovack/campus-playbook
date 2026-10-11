@@ -32,6 +32,7 @@ jobs:
             engine/data/work/emb_name_vecs.npy
             engine/data/work/emb_blurb_keys.json
             engine/data/work/emb_blurb_vecs.npy
+            engine/data/work/axes.npy
           key: embed2-cache-${{ github.run_id }}
           restore-keys: embed2-cache-
       - name: Pull the public data

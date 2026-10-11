@@ -74,7 +74,7 @@ export default function Coming() {
 
   const today = data ? noon(data[0].today) : 0;
   const all = useMemo(() => (data ? data[0].events.map((e) => ({ ...e, day: e.dt.slice(0, 10), off: Math.round((noon(e.dt) - today) / DAY) })) : []), [data, today]);
-  const peers = useMemo(() => { const pr = mine && extra.data ? extra.data[2].profiles[mine] : null; return pr ? new Set(pr.peers.map((x) => x.id)) : null; }, [mine, extra.data]);
+  const peers = useMemo(() => { const pr = mine && extra.data ? extra.data[2].profiles[mine] : null; return pr && pr.near && pr.near.length ? new Set(pr.near.map((x) => x.id)) : null; }, [mine, extra.data]);
   const usePeers = who === 'peers' && peers;
   // The window: the date range and, when asked, only centers like yours. The summary and the list both read it.
   const inWindow = useMemo(() => all.filter((e) => (range === 'all' || e.off <= range) && (!usePeers || peers.has(e.center))), [all, range, usePeers, peers]);
@@ -130,7 +130,7 @@ export default function Coming() {
         <Seg value={range} onChange={setRange} label="How far ahead" options={[[7, <>Next 7 days <span style={{ opacity: 0.6 }}>{count(7)}</span></>], [30, <>Next 30 days <span style={{ opacity: 0.6 }}>{count(30)}</span></>], ['all', <>Everything posted <span style={{ opacity: 0.6 }}>{count(Infinity)}</span></>]]} />
         {me && peers && <Seg value={usePeers ? 'peers' : 'all'} onChange={setWho} label="Which centers" options={[['all', 'Every center'], ['peers', `Only centers like ${centerLabel(me)}`]]} />}
       </div>
-      {me && extra.data && !peers && <p className="z-small z-muted mt-3">{centerLabel(me)} has too little on record to have a peer list, so every center is shown.</p>}
+      {me && extra.data && !peers && <p className="z-small z-muted mt-3">{centerLabel(me)} has too little on record to work out its nearest centers, so every center is shown.</p>}
       {usePeers && <p className="z-small z-muted mt-3" style={{ lineHeight: 1.45 }}>Showing only the twelve centers most like {centerLabel(me)} by campus, sign-up numbers and what they program. {windowCenters} of the twelve have something posted {rangeWords}.</p>}
 
       <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4">

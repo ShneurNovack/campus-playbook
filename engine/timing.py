@@ -15,7 +15,8 @@ from . import calendars as cal
 from .common import r, log
 from .types import TYPES, EVENT_TYPES
 
-FREE = ["class", "speaker", "cooking", "meal", "social", "israel", "chesed", "ritual", "trip", "outreach", "holiday_event"]
+# events a center chooses the day and hour for. Holiday events are left out: the calendar picks their day.
+FREE = ["class", "speaker", "cooking", "meal", "social", "israel", "chesed", "ritual", "trip", "outreach"]
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 MIN_N, MIN_C = 25, 6
 
@@ -25,13 +26,22 @@ def _gm(x, prior=4.0):
     return float(np.exp(x.sum() / (len(x) + prior))) if len(x) else None
 
 
+def _ref(x):
+    """The typical score of the whole group. A median yardstick leaves the average event a little under 1,
+    so every slot is divided by this: 1.0 then means 'a typical event of this kind'."""
+    x = np.asarray(x, float)
+    x = x[np.isfinite(x) & (x > 0)]
+    return float(np.exp(np.clip(np.log(x), -1.5, 1.5).mean())) if len(x) >= 20 else 1.0
+
+
 def _grid(df, value="adj"):
     """weekday x hour table."""
     cells = []
     sc = df[df["scored"] & df[value].notna()]
     cnt = df.groupby(["wd", "hour"]).agg(n=("id", "size"), centers=("center", "nunique"))
     per = sc.groupby(["wd", "hour"]).agg(ns=("id", "size"), cs=("center", "nunique"))
-    lifts = {k: _gm(g[value].values) for k, g in sc.groupby(["wd", "hour"])}
+    ref = _ref(sc[value].values)
+    lifts = {k: _gm(g[value].values) / ref for k, g in sc.groupby(["wd", "hour"])}
     total = max(1, len(df))
     for (wd, hr), row in cnt.iterrows():
         if hr < 7:
@@ -47,10 +57,11 @@ def _by(df, col, keys, value="adj"):
     out = []
     sc = df[df["scored"] & df[value].notna()]
     total = max(1, len(df))
+    ref = _ref(sc[value].values)
     for k in keys:
         g, s = df[df[col] == k], sc[sc[col] == k]
         out.append({"key": k if not isinstance(k, (np.integer,)) else int(k), "n": int(len(g)), "centers": int(g["center"].nunique()), "share": r(len(g) / total, 4),
-                    "scored": int(len(s)), "lift": r(_gm(s[value].values), 3) if len(s) >= 8 else None, "ok": bool(len(s) >= MIN_N and s["center"].nunique() >= MIN_C)})
+                    "scored": int(len(s)), "lift": r(_gm(s[value].values) / ref, 3) if len(s) >= 8 else None, "ok": bool(len(s) >= MIN_N and s["center"].nunique() >= MIN_C)})
     return out
 
 
@@ -78,11 +89,12 @@ def _fall_spring(df):
 def _week_curve(df, value="lift"):
     out = {}
     s = df[df["scored"] & df["season"].isin(["fall", "spring"]) & (df["tweek"] <= 16)]
+    ref = _ref(s[value].values)
     for sea, g in s.groupby("season"):
         rows = []
         for w in range(1, 17):
             x = g.loc[g["tweek"] == w, value]
-            rows.append({"week": w, "n": int(len(x)), "lift": r(_gm(x.values, prior=6.0), 3) if len(x) >= 12 else None})
+            rows.append({"week": w, "n": int(len(x)), "lift": r(_gm(x.values, prior=6.0) / ref, 3) if len(x) >= 12 else None})
         out[sea] = rows
     return out
 
@@ -105,9 +117,10 @@ def build(events, centers, today):
     out["overall"]["month"] = _by(free, "month_", range(1, 13))
     out["overall"]["third"] = []
     s = free[free["scored"] & free["tpos"].notna()]
+    ref3 = _ref(s["lift"].values)
     for lo, hi, lab in [(0, 0.2, "First fifth of the semester"), (0.2, 0.4, "Second fifth"), (0.4, 0.6, "Middle"), (0.6, 0.8, "Fourth fifth"), (0.8, 1.01, "Last fifth")]:
         g = s[(s["tpos"] >= lo) & (s["tpos"] < hi)]
-        out["overall"]["third"].append({"label": lab, "n": int(len(g)), "lift": r(_gm(g["lift"].values), 3) if len(g) >= 20 else None})
+        out["overall"]["third"].append({"label": lab, "n": int(len(g)), "lift": r(_gm(g["lift"].values) / ref3, 3) if len(g) >= 20 else None})
     for t in EVENT_TYPES:
         g = ev[ev["type"] == t]
         if len(g) < 60:
@@ -135,20 +148,23 @@ def build(events, centers, today):
     out["jewish"] = jew
     sec = []
     fr = ev[ev["type"].isin(FREE + ["shabbat_dinner"])]
+    ref_all = _ref(fr.loc[fr["scored"], "adj"].dropna().values)
+    ref_sd = _ref(fr.loc[fr["scored"] & (fr["type"] == "shabbat_dinner"), "adj"].dropna().values)
     for key, label in cal.SECULAR_LABEL.items():
         g = fr[fr["sec"] == key]
         s = g[g["scored"]]
         if len(g) < 30:
             continue
         sd = g[(g["type"] == "shabbat_dinner") & g["scored"]]
-        sec.append({"key": key, "label": label, "n": int(len(g)), "centers": int(g["center"].nunique()), "lift": r(_gm(s["lift"].values), 3) if len(s) >= 20 else None,
-                    "dinner_lift": r(_gm(sd["lift"].values), 3) if len(sd) >= 15 else None, "dinner_n": int(len(sd))})
+        sec.append({"key": key, "label": label, "n": int(len(g)), "centers": int(g["center"].nunique()), "lift": r(_gm(s["adj"].dropna().values) / ref_all, 3) if len(s) >= 20 else None, "scored": int(len(s)),
+                    "dinner_lift": r(_gm(sd["adj"].dropna().values) / ref_sd, 3) if len(sd) >= 15 else None, "dinner_n": int(len(sd))})
     out["secular"] = sec
     hm = []
+    ref_free = _ref(ev.loc[ev["scored"] & ev["type"].isin(FREE), "adj"].dropna().values)
     for m_, name in [(7, "Tishrei"), (8, "Cheshvan"), (9, "Kislev"), (10, "Tevet"), (11, "Shvat"), (12, "Adar"), (1, "Nisan"), (2, "Iyar"), (3, "Sivan"), (4, "Tammuz"), (5, "Av"), (6, "Elul")]:
         g = ev[ev["hm"].isin([m_, 13] if m_ == 12 else [m_])]
         s = g[g["scored"] & g["type"].isin(FREE)]
-        hm.append({"month": name, "n": int(len(g)), "centers": int(g["center"].nunique()), "lift": r(_gm(s["lift"].values), 3) if len(s) >= 25 else None})
+        hm.append({"month": name, "n": int(len(g)), "centers": int(g["center"].nunique()), "lift": r(_gm(s["adj"].dropna().values) / ref_free, 3) if len(s) >= 25 else None, "scored": int(len(s))})
     out["hebrew_months"] = hm
     log("timing: types", len(out["types"]), "| free-choice events", out["overall"]["n_free"], "scored", out["overall"]["scored_free"])
     return out

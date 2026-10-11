@@ -410,7 +410,7 @@ export default function Timing() {
       <TypePills value={key} onChange={pick} options={[['all', 'All free-choice events'], ...typeKeys.map((t) => [t, T.types[t].label])]} />
       <p className="mt-5 z-muted max-w-[70ch]" style={{ lineHeight: 1.5 }}>
         {isAll
-          ? `${N(O.n_free)} events a center chose the time for (classes, socials, food, speakers, holiday events and the like), ${N(O.scored_free)} of them scored. Shabbat meals, holiday meals and services are left out of this view because the calendar picks their time. Pick one above to see it alone.`
+          ? `${N(O.n_free)} events a center chose the time for (classes, socials, food, speakers, trips and the like), ${N(O.scored_free)} of them scored. Shabbat meals, holiday events and services are left out of this view because the calendar picks their day. Pick one above to see it alone.`
           : `${S.label}: ${N(S.n)} events at ${plural(S.centers, 'center')}, ${N(S.scored)} of them scored.${S.median_regs != null ? ` A typical one draws ${N(Math.round(S.median_regs))} ${Math.round(S.median_regs) === 1 ? 'sign-up' : 'sign-ups'}.` : ''}${fixed ? ' The calendar fixes the day for this kind of event, so read the hours here more than the days. For holidays, the weekday only shows where the holiday happened to fall.' : ''}`}
       </p>
 
@@ -429,7 +429,7 @@ export default function Timing() {
         <div className="z-card"><HeatTable cells={cells} mode={m === 'lift' ? 'lift' : 'count'} /></div>
       </Section>
 
-      <Section id="bars-h" title="By day, and by hour" sub={`Each bar rises or falls from the line, which is the center's own normal. The grey number under each label is how many events were held.${avg != null && Math.abs(avg - 1) >= 0.02 ? ` The average across this view sits at ${pct(avg)}, so compare the bars with each other as much as with the line.${avg > 1.08 ? ' Centers that run only a few of these a year are measured against their usual event of any kind, which is part of why this kind sits above the line.' : ''}` : ''}`}>
+      <Section id="bars-h" title="By day, and by hour" sub={`Each bar rises or falls from the line, which is a typical event of this kind at the same center. The grey number under each label is how many events were held.${avg != null && Math.abs(avg - 1) >= 0.02 ? ` The average across this view sits at ${pct(avg)}, so compare the bars with each other as much as with the line.${avg > 1.08 ? ' Centers that run only a few of these a year are measured against their usual event of any kind, which is part of why this kind sits above the line.' : ''}` : ''}`}>
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,5fr)_minmax(0,8fr)] gap-4">
           <div className="z-card"><H3>Day of the week</H3><p className="z-small z-muted mt-1 mb-4" style={{ minHeight: '2.4em' }}>{span(wdRows, wB, wW, 'day')}</p><LiftColumns rows={wdRows} highlight={wB} label="Lift by day of the week" /></div>
           <div className="z-card"><H3>Hour of the day</H3><p className="z-small z-muted mt-1 mb-4" style={{ minHeight: '2.4em' }}>{hrRows.length ? span(hrRows, hrB, hrW, 'hour') : 'No hours to show.'}</p>{hrRows.length > 0 && <LiftColumns rows={hrRows} highlight={hrB} minCol={hrRows.length > 9 ? 36 : 0} label="Lift by hour of the day" />}{hrRows.length > 9 && <p className="sm:hidden z-small z-muted mt-3">Swipe sideways for the other hours.</p>}</div>

@@ -76,6 +76,48 @@ def cluster(P, V):
             if l not in m:
                 m[l] = nxt; nxt += 1
             label[i] = m[l]
+    return _merge_same_name(P, label)
+
+
+_FOLD = [(r"hamm?[ae]nt[ae]s(ch|h)?(en|in)?", "hamantash"), (r"\b(c?h)an+uk+a?h?\b", "chanukah"), (r"\bsuc?k+[ao]h?\b", "sukkah"), (r"\bsuc?k+o[ts]h?\b", "sukkot"),
+         (r"hashanah?", "hashana"), (r"\bbaking\b", "bake"), (r"\b(pesach|passover)\b", "passover"), (r"\bshavuos\b", "shavuot"), (r"\bshabbos\b", "shabbat"),
+         (r"\bbar[- ]?b[- ]?q(ue)?\b|\bbarbe[cq]ue\b", "bbq"), (r"\bcha[- ]?bbq\b", "chabbq"), (r"\b(19|20)\d\d\b|\b\d+(st|nd|rd|th)\b", " ")]
+_DROP = {"the", "a", "an", "annual", "chabad", "chabad's", "at", "with", "our", "and", "for", "of", "to", "in", "on", "night", "event", "edition", "pm", "am"}
+
+
+def _canon(nname):
+    """The name with spelling variants, years and filler words folded away, so 'Hamentashen Baking 2024' and
+    'Hamantash Bake' count as one name."""
+    s = nname
+    for pat, rep in _FOLD:
+        s = re.sub(pat, rep, s)
+    toks = [w.strip("'-+/") for w in re.split(r"[\s\-/+]+", s)]
+    toks = [w[:-1] if len(w) > 4 and w.endswith("s") and not w.endswith("ss") else w for w in toks if w and w not in _DROP]
+    return " ".join(toks)
+
+
+def _merge_same_name(P, label):
+    """Clusters are cut on wording, and the same event described two ways can land in two clusters. When two
+    clusters of one type go by the same name (their most common name, folded), they are one idea."""
+    by = defaultdict(Counter)
+    for i in np.where(label >= 0)[0]:
+        if P["type"].values[i] == "shabbat_dinner":
+            continue
+        by[label[i]][_canon(P["nname"].values[i])] += 1
+    typ = {l: P["type"].values[np.where(label == l)[0][0]] for l in by}
+    first = {}
+    remap = {}
+    for l in sorted(by, key=lambda l: -sum(by[l].values())):
+        top, cnt = by[l].most_common(1)[0]
+        if not top or cnt < 0.5 * sum(by[l].values()):
+            continue
+        key = (typ[l], top)
+        if key in first:
+            remap[l] = first[key]
+        else:
+            first[key] = l
+    if remap:
+        label = np.array([remap.get(l, l) for l in label])
     return label
 
 

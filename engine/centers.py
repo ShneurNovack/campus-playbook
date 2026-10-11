@@ -23,6 +23,9 @@ GROUPS = {"shabbat": ["shabbat_dinner", "shabbat_lunch", "shabbat_services", "sh
 GROUP_LABEL = {"shabbat": "Shabbat", "holiday": "Holidays", "learning": "Classes", "social": "Social and food", "other": "Everything else"}
 
 
+GAP_NEAR = 0.60   # a program this close to an idea's center of mass counts as already running it
+
+
 def _z(x):
     x = np.asarray(x, float)
     med = np.nanmedian(x) if np.isfinite(x).any() else 0.0
@@ -131,6 +134,21 @@ def build(centers, events, P, V, ideas, today):
     for i in ideas:
         cs = set(P.loc[i["programs"], "center"][P.loc[i["programs"], "last"].map(lambda d: d >= recent_cut).values])
         idea_centers[i["id"]] = (cs, set(P.loc[i["programs"], "center"]))
+    # an idea is only missing at a center when nothing the center runs is close to it: not in the idea's own cluster,
+    # not near its center of mass, and not sharing its name
+    from . import embed as _embed
+    from .ideas import _canon
+    Vc = _embed.unit(V - V.mean(0))
+    cent = _embed.unit(np.stack([Vc[i["programs"]].mean(0) for i in ideas]))
+    icanon = [set(_canon(i["label"].lower()).split()) for i in ideas]
+    pcanon = [set(_canon(n).split()) for n in P["nname"]]
+    near = {}
+    for cid_, g_ in P.groupby("center"):
+        ix_ = g_.index.values
+        mx = (Vc[ix_] @ cent.T).max(0)
+        words = [pcanon[j] for j in ix_]
+        hit = np.array([bool(ic) and any(ic <= w for w in words) for ic in icanon])
+        near[cid_] = (mx >= GAP_NEAR) | hit
     out = {}
     for a, cid in enumerate(ids):
         order = [b for b in np.argsort(-S[a]) if b != a][:12]
@@ -142,7 +160,7 @@ def build(centers, events, P, V, ideas, today):
         gaps = []
         for i in ideas:
             recent_c, ever = idea_centers[i["id"]]
-            if cid in ever:
+            if cid in ever or (cid in near and near[cid][i["id"]]):
                 continue
             npeers = len(recent_c & pset)
             if npeers >= 3 and (i["lift"] is None or i["lift"] >= 0.9):

@@ -2,6 +2,7 @@
 events   one row per event occurrence (past, upcoming, canceled), with the three calendars attached
 centers  one row per Chabad house that uses the RSVP system, with its primary campus
 """
+import re
 import datetime as dt
 import pickle, os, statistics
 from collections import defaultdict, Counter
@@ -53,7 +54,15 @@ def build_centers():
             "levels": c.get("programLevels") or [],
         })
     df = pd.DataFrame(out).set_index("id", drop=False).sort_index()
+    # a nickname is a label, so no stray quotes or commas; a Jewish population above the whole enrollment is a typo
+    df["nick"] = df["nick"].map(lambda s: (re.sub(r"^[^\w]+|[^\w)]+$", "", s) or None) if isinstance(s, str) else None)
+    tot = df[["pop_ug", "pop_grad"]].sum(axis=1, min_count=1)
+    bad = df["jpop"].notna() & tot.notna() & (df["jpop"] > tot)
+    df.loc[bad, ["jpop", "jpop_ug", "jpop_grad"]] = None
     return df
+
+
+_TEST = re.compile(r"\btest(ing)?\b|\bnot real\b|\bdemo\b|\bfake\b", re.I)
 
 
 def build_events(pulled_at):
@@ -69,6 +78,8 @@ def build_events(pulled_at):
             if d.year < 2019 or d.date() > today + dt.timedelta(days=400):
                 continue
             name = clean(e.get("name"))
+            if _TEST.search(name) and "test your" not in name.lower():
+                continue
             desc, short = clean(e.get("description")), clean(e.get("shortDescription"))
             if short and (short == desc or short in desc):
                 short = ""
@@ -76,7 +87,7 @@ def build_events(pulled_at):
                 "id": e["eventScheduleID"], "setting": e["eventSettingID"], "enrollment": int(eid), "center": e["chabadHouseID"],
                 "name": name, "nname": norm_name(name), "desc": desc, "short": short, "img": _img(e.get("imageURL")),
                 "dt": d, "date": d.date(), "tz": e.get("timezoneID"),
-                "canceled": e.get("eventState") == "Canceled", "upcoming": e.get("occurrenceStatus") == "Upcoming",
+                "canceled": e.get("eventState") == "Canceled", "upcoming": e.get("occurrenceStatus") == "Upcoming" and e.get("eventState") != "Canceled",
                 "setting_state": e.get("eventSettingState"), "recurring": e.get("scheduleType") == "Recurring",
                 "offsite": e.get("location") == "Other", "place": clean(e.get("locationName") or e.get("address1")) or None,
                 "capacity": e.get("totalCapacity"), "regs": int(e.get("numberOfRegistrations") or 0),

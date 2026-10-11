@@ -90,13 +90,19 @@ def predictor_check(P, Xn, cen_sim=None):
     return out
 
 
+def _bare(name, desc, short):
+    """A program posted with a name and nothing else. Search treats these with care (see src/lib/search.js)."""
+    nm, d, s = (name or "").strip().lower(), (desc or "").strip().lower(), (short or "").strip().lower()
+    return (len(d) < 25 or d == nm) and (len(s) < 25 or s == nm)
+
+
 def catalog(P, events, centers, ideas, theme_ids, q8):
     cidx = {c: i for i, c in enumerate(centers.index)}
     tkeys = list(TYPES)
     ev = events[events["ran"] | events["upcoming"]].sort_values("dt")
     occ = {}
     for pid, g in ev[~events.loc[ev.index, "canceled"]].groupby("pid"):
-        occ[int(pid)] = [[day(d), int(rg) if not up else -1, int(round(a * 100)) if a == a else 0] for d, rg, a, up in zip(g["date"], g["regs"], g["adj"], g["upcoming"])]
+        occ[int(pid)] = [[day(d), int(rg) if not up else -1, int(round(a * 100)) if (a == a and sc_) else 0] for d, rg, a, up, sc_ in zip(g["date"], g["regs"], g["adj"], g["upcoming"], g["scored"])]
     cs = []
     for c, row in centers.iterrows():
         short = row["nick"] if isinstance(row["nick"], str) and row["nick"] else (row["campus"] or row["name"])
@@ -113,7 +119,8 @@ def catalog(P, events, centers, ideas, theme_ids, q8):
         "reg": [r(x, 1) for x in P["med_regs"]], "mx": [int(x) for x in P["max_regs"]], "adj": [int(round(x * 100)) if x == x and x is not None else None for x in P["adj"]],
         "ns": [int(x) for x in P["n_scored"]], "img": [x if isinstance(x, str) else None for x in P["img"]], "idea": [int(x) for x in P["idea"]],
         "th": [[theme_ids.get(k, k) for k in ks] or None for ks in P["themes"]], "wd": [int(x) for x in P["wd"]], "hr": [int(x) for x in P["hour"]],
-        "fl": [(1 if a else 0) + (2 if b else 0) + (4 if c_ else 0) for a, b, c_ in zip(P["collab"], P["offsite"], P["recurring"])],
+        "fl": [(1 if a else 0) + (2 if b else 0) + (4 if c_ else 0) + (8 if _bare(nm, d_, s_) else 0)
+               for a, b, c_, nm, d_, s_ in zip(P["collab"], P["offsite"], P["recurring"], P["name"], P["desc"], P["short"])],
     }
     core = {"epoch": EPOCH.isoformat(), "img_prefix": IMG_PREFIX, "types": TYPES, "type_keys": tkeys, "event_types": EVENT_TYPES, "centers": cs, "programs": cols, "dims": int(q8.shape[1]), "count": int(len(P))}
     text = {"desc": [d[:700] for d in P["desc"]], "short": [s[:200] for s in P["short"]], "occ": [occ.get(int(p), []) for p in P["pid"]]}

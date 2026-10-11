@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Search, X } from 'lucide-react';
 import { useData, load, plural, centerLabel } from '../lib/data';
 import { PageHead, Loading, ErrorNote, Empty, Lift, Seg, FlyerGrid, useDebounced } from '../components/bits';
-import { searchIndex, embed, scoreAll, wordMatch } from '../lib/search';
+import { searchIndex, embed, scoreText, wordMatch } from '../lib/search';
 
 // ---- shared with Program.jsx
 
@@ -152,7 +152,7 @@ export default function Library() {
         const ix = await searchIndex();
         const words = wordMatch(ix, q);
         let sims = null, err = null;
-        try { sims = scoreAll(ix, await embed(q)); } catch (e) { err = e; }
+        try { sims = scoreText(ix, await embed(q)); } catch (e) { err = e; }
         if (!live) return;
         const score = new Float32Array(ix.n);
         for (let i = 0; i < ix.n; i++) score[i] = sims ? sims[i] + LEXICAL * words[i] : words[i];

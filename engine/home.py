@@ -58,9 +58,9 @@ def build(events, centers, P, ideas, themes_blob, today):
     rising = sorted([t for t in trending if not t["staple"] and t["centers"] >= 3 and t["ratio"] >= 1.3 and t["centers"] >= t["last_year"] + 2], key=lambda t: -t["ratio"] * np.sqrt(t["centers"]))[:16]
     new = []
     for i in ideas:
-        if i["first"] and (today - dt.date.fromisoformat(i["first"]["date"])).days <= 400 and i["centers"] >= 2:
+        if i["first"] and (today - dt.date.fromisoformat(i["first"]["date"])).days <= 150 and i["centers"] >= 2 and i["type"] not in ("holiday_service", "shabbat_services") and not i.get("staple"):
             new.append({"idea": i["id"], "label": i["label"], "type": i["type"], "centers": i["centers"], "first": i["first"], "lift": i["lift"], "img_pid": i["flyers"][0] if i["flyers"] else None})
-    new.sort(key=lambda x: (-x["centers"], x["first"]["date"]))
+    new.sort(key=lambda x: (x["first"]["date"], x["centers"]), reverse=True)
 
     # what did well in the last three weeks
     recent = ev[(ev["date"] >= today - dt.timedelta(days=21)) & ev["ran"] & ev["scored"] & (ev["regs"] >= 15) & (ev["base"].fillna(ev["cbase"]) >= 5)]

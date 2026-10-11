@@ -11,12 +11,36 @@ DIM = 1024
 _lock = threading.Lock()
 
 
+_oidc = {"at": 0.0, "token": None}
+_oidc_lock = threading.Lock()
+
+
+def _github_token():
+    """Inside GitHub Actions the job carries no secret. It asks GitHub for a short-lived signed token that names
+    this repository and workflow, and the Worker checks the signature (worker/oidc.js). Tokens last a few minutes,
+    so a fresh one is requested when the last is older than three."""
+    url, bearer = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL"), os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+    if not url or not bearer:
+        return None
+    with _oidc_lock:
+        if _oidc["token"] and time.time() - _oidc["at"] < 180:
+            return _oidc["token"]
+        req = urllib.request.Request(url + "&audience=campus-playbook-analyst", headers={"authorization": "Bearer " + bearer, "user-agent": "campus-playbook-engine"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            _oidc["token"], _oidc["at"] = json.load(r)["value"], time.time()
+        return _oidc["token"]
+
+
 def _headers():
     h = {"content-type": "application/json", "user-agent": "campus-playbook-engine"}
     if os.environ.get("ANALYST_KEY"):
         h["x-analyst-key"] = os.environ["ANALYST_KEY"]
     elif os.environ.get("ANALYST_TOKEN"):
         h["authorization"] = "Bearer " + os.environ["ANALYST_TOKEN"]
+    else:
+        tok = _github_token()
+        if tok:
+            h["authorization"] = "Bearer " + tok
     return h
 
 

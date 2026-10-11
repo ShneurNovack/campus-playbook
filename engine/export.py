@@ -162,8 +162,8 @@ def write_all(state):
 def push(names=None):
     """Upload the output folder to the Worker's bucket."""
     edge = os.environ.get("EDGE_URL", "https://campus-playbook.shneur.workers.dev")
-    hdr = embed._headers()
     for name in sorted(os.listdir(OUT)):
+        hdr = embed._headers()
         if names and name not in names:
             continue
         path = f"{OUT}/{name}"
